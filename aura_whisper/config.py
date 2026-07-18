@@ -72,6 +72,7 @@ class Config:
     pause_media_while_recording: bool = True
     idle_unload_minutes: int = 5
     cue_sounds: bool = True
+    cue_sound: str = "harp"
 
     @classmethod
     def load(cls, path: Path = CONFIG_PATH) -> "Config":

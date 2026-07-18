@@ -382,6 +382,7 @@ class MainWindow(QMainWindow):
         if self._config.pause_media_while_recording:
             self._media.pause()
         if getattr(self._config, "cue_sounds", True):
+            cues.set_theme(getattr(self._config, "cue_sound", "harp"))
             cues.play_start()
         self._recorder.start()
 
@@ -392,6 +393,7 @@ class MainWindow(QMainWindow):
         self._hud.set_recording(False)
         self._set_status("Processing…")
         if getattr(self._config, "cue_sounds", True):
+            cues.set_theme(getattr(self._config, "cue_sound", "harp"))
             cues.play_stop()
         self._recorder.stop()
         if self._config.pause_media_while_recording:

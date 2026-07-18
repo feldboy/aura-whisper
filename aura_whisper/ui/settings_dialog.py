@@ -14,11 +14,13 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QPushButton,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
+from aura_whisper.audio import cues
 from aura_whisper.config import Config
 from aura_whisper.models.manager import format_size, scan_models
 from aura_whisper.ui.hotkey_edit import HotkeyEdit
@@ -130,9 +132,37 @@ class GeneralPage(QWidget):
         self.cue_sounds = _checkbox_with_sub(
             self,
             "Play a sound when recording starts and stops",
-            "A soft chime so you always know when the mic is live.",
+            "A soft cue so you always know when the mic is live.",
             getattr(config, "cue_sounds", True),
         )
+
+        # Pick which cue sound to play, with an instant preview.
+        self.cue_sound = QComboBox(self)
+        for key, label in cues.CUE_SOUND_OPTIONS:
+            self.cue_sound.addItem(label, key)
+        cue_idx = self.cue_sound.findData(getattr(config, "cue_sound", "harp"))
+        self.cue_sound.setCurrentIndex(cue_idx if cue_idx >= 0 else 0)
+        # Connect only after the initial selection so the dialog opens silently.
+        self.cue_sound.currentIndexChanged.connect(
+            lambda: cues.preview(self.cue_sound.currentData(), "start")
+        )
+        cue_preview = QPushButton("▶", self)
+        cue_preview.setFixedWidth(40)
+        cue_preview.setToolTip("Preview this sound")
+        cue_preview.setFocusPolicy(Qt.NoFocus)
+        cue_preview.clicked.connect(
+            lambda: cues.preview(self.cue_sound.currentData(), "start")
+        )
+        cue_row = QHBoxLayout()
+        cue_row.setContentsMargins(24, 0, 0, 0)
+        cue_row.setSpacing(8)
+        cue_lbl = QLabel("Sound")
+        cue_lbl.setProperty("toggleHint", True)
+        cue_row.addWidget(cue_lbl)
+        cue_row.addWidget(self.cue_sound, 1)
+        cue_row.addWidget(cue_preview)
+        self._cue_sound_row = QWidget(self)
+        self._cue_sound_row.setLayout(cue_row)
         self.vad = _checkbox_with_sub(
             self,
             "Skip silent parts automatically",
@@ -192,7 +222,8 @@ class GeneralPage(QWidget):
                     _subgroup(
                         body,
                         "While recording",
-                        [self.keep_mic_warm, self.pause_media, self.cue_sounds],
+                        [self.keep_mic_warm, self.pause_media, self.cue_sounds,
+                         self._cue_sound_row],
                     ),
                     _subgroup(body, "Transcription", [self.vad]),
                     _subgroup(body, "Output", [self.auto_paste]),
@@ -383,6 +414,7 @@ class SettingsDialog(QDialog):
             pause_media_while_recording=g.pause_media.isChecked(),
             idle_unload_minutes=a.idle_unload.currentData(),
             cue_sounds=g.cue_sounds.isChecked(),
+            cue_sound=g.cue_sound.currentData() or "harp",
             modes=modes,
             active_mode=active_mode,
             ollama_url=ollama_url,
