@@ -230,10 +230,6 @@ class MainWindow(QMainWindow):
         menu.addMenu(self._mode_menu)
         self._rebuild_mode_menu()
 
-        show_action = QAction("Open AuraWhisper", menu)
-        show_action.triggered.connect(self._show_window)
-        menu.addAction(show_action)
-
         settings_action = QAction("Settings…", menu)
         settings_action.triggered.connect(self.open_settings)
         menu.addAction(settings_action)
@@ -268,11 +264,6 @@ class MainWindow(QMainWindow):
         self._config.active_mode = name
         self._config.save()
         self._update_mode_label()
-
-    def _show_window(self) -> None:
-        self.show()
-        self.raise_()
-        _activate_app()
 
     def quit_app(self) -> None:
         self._quitting = True

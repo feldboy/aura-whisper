@@ -2,11 +2,10 @@ from __future__ import annotations
 
 """Soft, synthesized audio cues that mark the start and end of a recording.
 
-Instead of relying on macOS system sounds (harsh and inconsistent), these cues
-are generated once with numpy as gentle two-note chimes and played non-blocking
-through ``sounddevice`` (already a project dependency). Everything degrades to a
-silent no-op when the audio backend is unavailable, so callers never need to
-guard the calls.
+The cues are gentle plucked-string (harp-like) tones, generated once with numpy
+via Karplus-Strong synthesis and played non-blocking through ``sounddevice``
+(already a project dependency). Everything degrades to a silent no-op when the
+audio backend is unavailable, so callers never need to guard the calls.
 """
 
 from typing import Optional
@@ -14,39 +13,48 @@ from typing import Optional
 import numpy as np
 
 _SR = 44_100          # output sample rate
-_CUE_VOLUME = 0.19    # soft — a gentle presence, never a "hit"
+_CUE_VOLUME = 0.26    # soft — a gentle presence, never startling
 
 
-def _drop(f0: float, f1: float, dur: float, tau: float, *,
-          start: float, total: float, gain: float = 1.0) -> np.ndarray:
-    """A single, calm water-drop 'plink'.
+def _pluck(freq: float, dur: float, *, start: float, total: float,
+           gain: float = 1.0, decay: float = 0.9965) -> np.ndarray:
+    """A warm plucked-string (harp) note via Karplus-Strong synthesis.
 
-    A real drop's air cavity shrinks as it closes, so its pitch rises gently
-    while the sound decays smoothly — that soft upward chirp + gradual decay is
-    what the ear recognizes as water. Kept low and mellow so it feels calming
-    rather than sharp or startling.
+    A short excitation is fed through a short delay line with a gentle
+    low-pass in the feedback path, so the tone starts soft and its overtones
+    fade naturally — the characteristic mellow 'pluck' of a harp string. The
+    excitation is pre-smoothed so the attack is round and never startling.
     """
     n_total = int(total * _SR)
     n = int(dur * _SR)
-    t = np.linspace(0.0, dur, n, endpoint=False)
+    N = max(2, int(_SR / freq))
 
-    # Gentle exponential pitch rise (a small, unhurried sweep — not a zip).
-    sweep = 1.0 - np.exp(-t / (dur * 0.5))
-    freq = f0 + (f1 - f0) * sweep
-    phase = 2 * np.pi * np.cumsum(freq) / _SR
-    wave = np.sin(phase) + 0.05 * np.sin(2 * phase)  # near-pure, warm
+    rng = np.random.default_rng(int(freq * 100))  # deterministic per pitch
+    buf = rng.uniform(-1.0, 1.0, N).astype(np.float64)
+    # Pre-smooth the excitation → a softer, warmer, less noisy attack.
+    for _ in range(4):
+        buf = 0.5 * (buf + np.roll(buf, 1))
 
-    # Soft rounded attack (no click) then a smooth, unhurried decay.
-    env = np.exp(-t / tau).astype(np.float32)
-    attack = max(1, int(0.010 * _SR))
-    env[:attack] *= np.sin(np.linspace(0.0, np.pi / 2, attack)) ** 2
-    wave = (wave * env * gain).astype(np.float32)
+    out = np.zeros(n, dtype=np.float64)
+    ptr = 0
+    for i in range(n):
+        out[i] = buf[ptr]
+        nxt = (ptr + 1) % N
+        buf[ptr] = decay * 0.5 * (buf[ptr] + buf[nxt])
+        ptr = nxt
 
-    out = np.zeros(n_total, dtype=np.float32)
+    # Gentle attack + smooth tail so start/end are click-free.
+    attack = max(1, int(0.006 * _SR))
+    out[:attack] *= np.sin(np.linspace(0.0, np.pi / 2, attack)) ** 2
+    tail = max(1, int(0.03 * _SR))
+    out[-tail:] *= np.cos(np.linspace(0.0, np.pi / 2, tail)) ** 2
+    out = (out * gain).astype(np.float32)
+
+    result = np.zeros(n_total, dtype=np.float32)
     offset = int(start * _SR)
-    seg = wave[: max(0, n_total - offset)]
-    out[offset:offset + len(seg)] += seg
-    return out
+    seg = out[: max(0, n_total - offset)]
+    result[offset:offset + len(seg)] += seg
+    return result
 
 
 def _normalize(sig: np.ndarray) -> np.ndarray:
@@ -55,18 +63,20 @@ def _normalize(sig: np.ndarray) -> np.ndarray:
 
 
 def _build_start() -> np.ndarray:
-    """A soft, calm water drop — a gentle 'listening' cue."""
-    total = 0.55
+    """A deep, short harp roll (rising) — a warm 'listening' cue."""
+    total = 0.62
     return _normalize(
-        _drop(470.0, 640.0, 0.48, 0.15, start=0.00, total=total)
+        _pluck(196.00, 0.55, start=0.00, total=total)          # G3
+        + _pluck(293.66, 0.55, start=0.07, total=total, gain=0.9)  # D4
     )
 
 
 def _build_stop() -> np.ndarray:
-    """A lower, rounder water drop — a peaceful 'captured' cue."""
-    total = 0.55
+    """A deep, short harp roll (falling) — a calm 'captured' cue."""
+    total = 0.62
     return _normalize(
-        _drop(360.0, 480.0, 0.50, 0.17, start=0.00, total=total)
+        _pluck(293.66, 0.50, start=0.00, total=total)          # D4
+        + _pluck(196.00, 0.55, start=0.07, total=total, gain=0.9)  # G3
     )
 
 
