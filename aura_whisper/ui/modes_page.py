@@ -33,6 +33,7 @@ class AIModesPage(QWidget):
 
     def __init__(self, config: Config, parent=None) -> None:
         super().__init__(parent)
+        self.setLayoutDirection(Qt.LeftToRight)
         self.modes: list[dict] = copy.deepcopy(config.modes)
         self.active_mode: str = config.active_mode
         self._current_index: int = -1
@@ -68,7 +69,7 @@ class AIModesPage(QWidget):
 
         # --- modes list (left column) ---
         self._list = QListWidget(self)
-        self._list.setMinimumWidth(180)
+        self._list.setMinimumWidth(150)
         self._list.setMinimumHeight(220)
         self._list.currentRowChanged.connect(self._on_row_changed)
 
@@ -92,7 +93,7 @@ class AIModesPage(QWidget):
         left.addLayout(list_btns)
         left_holder = QWidget(self)
         left_holder.setLayout(left)
-        left_holder.setFixedWidth(220)
+        left_holder.setFixedWidth(180)
 
         # --- mode editor (right column) ---
         self._name = QLineEdit(self)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import QSize
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QComboBox,
@@ -288,6 +288,9 @@ class SettingsDialog(QDialog):
     def __init__(self, config: Config, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("AuraWhisper — Settings")
+        # The UI is authored left-to-right; pin the direction so a Hebrew/RTL
+        # system locale can't mirror the layout and clip content off-screen.
+        self.setLayoutDirection(Qt.LeftToRight)
         self._config = config
         self.result_config = replace(config)
 
