@@ -14,28 +14,32 @@ from typing import Optional
 import numpy as np
 
 _SR = 44_100          # output sample rate
-_CUE_VOLUME = 0.20    # soft — a gentle presence, never a "hit"
+_CUE_VOLUME = 0.24    # soft — a gentle presence, never a "hit"
 
 
-def _note(freq: float, dur: float, *, start: float, total: float) -> np.ndarray:
-    """A soft, pure sine note — Siri-style: clean, calm, non-percussive.
+def _drop(f0: float, f1: float, dur: float, tau: float, *,
+          start: float, total: float, gain: float = 1.0) -> np.ndarray:
+    """A single water-drop 'plink'.
 
-    A gentle rounded swell-in (no sharp transient, so it never sounds like a
-    key strike) plus a smooth fade-out. A whisper of the octave adds warmth
-    without turning it into a bell/chime. No pitch glide — discrete notes read
-    as a friendly cue rather than an alarm sweep.
+    A real drop's air cavity shrinks as it closes, so its pitch rises quickly
+    while the sound decays fast — that upward chirp + exponential decay is what
+    the ear recognizes as water (a slow glide would read as a siren instead).
     """
     n_total = int(total * _SR)
     n = int(dur * _SR)
     t = np.linspace(0.0, dur, n, endpoint=False)
 
-    wave = np.sin(2 * np.pi * freq * t) + 0.08 * np.sin(2 * np.pi * freq * 2 * t)
+    # Fast exponential pitch rise (most of the sweep happens up front).
+    sweep = 1.0 - np.exp(-t / (dur * 0.35))
+    freq = f0 + (f1 - f0) * sweep
+    phase = 2 * np.pi * np.cumsum(freq) / _SR
+    wave = np.sin(phase) + 0.10 * np.sin(2 * phase)
 
-    env = np.ones(n, dtype=np.float32)
-    attack = max(1, int(0.018 * _SR))
-    env[:attack] = np.sin(np.linspace(0.0, np.pi / 2, attack)) ** 2
-    env[attack:] = np.cos(np.linspace(0.0, np.pi / 2, n - attack)) ** 1.5
-    wave = (wave * env).astype(np.float32)
+    # Tiny rounded attack (no click) then a fast exponential decay = the "plink".
+    env = np.exp(-t / tau).astype(np.float32)
+    attack = max(1, int(0.004 * _SR))
+    env[:attack] *= np.linspace(0.0, 1.0, attack)
+    wave = (wave * env * gain).astype(np.float32)
 
     out = np.zeros(n_total, dtype=np.float32)
     offset = int(start * _SR)
@@ -50,20 +54,20 @@ def _normalize(sig: np.ndarray) -> np.ndarray:
 
 
 def _build_start() -> np.ndarray:
-    """Two soft rising notes — a friendly 'listening' cue (Siri-style)."""
-    total = 0.42
+    """A bright water drop + soft ripple — a fresh 'listening' cue."""
+    total = 0.40
     return _normalize(
-        _note(659.25, 0.16, start=0.00, total=total)   # E5
-        + _note(987.77, 0.24, start=0.13, total=total)  # B5
+        _drop(760.0, 1500.0, 0.34, 0.075, start=0.00, total=total)
+        + _drop(1020.0, 1900.0, 0.20, 0.05, start=0.11, total=total, gain=0.35)
     )
 
 
 def _build_stop() -> np.ndarray:
-    """Two soft falling notes — a calm 'captured' cue (Siri-style)."""
-    total = 0.42
+    """A lower, rounder water drop — a calm 'captured' cue."""
+    total = 0.40
     return _normalize(
-        _note(987.77, 0.16, start=0.00, total=total)   # B5
-        + _note(659.25, 0.24, start=0.13, total=total)  # E5
+        _drop(560.0, 1080.0, 0.36, 0.085, start=0.00, total=total)
+        + _drop(720.0, 1320.0, 0.20, 0.05, start=0.12, total=total, gain=0.30)
     )
 
 
