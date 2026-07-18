@@ -14,9 +14,9 @@ from typing import Optional
 _SYSTEM_SOUNDS = Path("/System/Library/Sounds")
 
 # Subtle, short, and clearly distinct from each other.
-_START_SOUND = "Tink.aiff"   # a light upward "tick" — recording opened
-_STOP_SOUND = "Pop.aiff"     # a soft "pop" — recording closed
-_CUE_VOLUME = 0.35
+_START_SOUND = "Hero.aiff"   # uplifting chime — recording opened
+_STOP_SOUND = "Blow.aiff"    # gentle whoosh — recording closed
+_CUE_VOLUME = 0.48
 
 
 class _CuePlayer:

@@ -11,7 +11,7 @@ from aura_whisper.audio.meter import SpectrumMeter
 class Waveform(QWidget):
     """Siri-style animated spectrum bars with glow."""
 
-    N_BANDS = 48
+    N_BANDS = 64
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -26,7 +26,7 @@ class Waveform(QWidget):
         self._idle_phase = 0.0
 
         self._timer = QTimer(self)
-        self._timer.setInterval(16)
+        self._timer.setInterval(10)
         self._timer.timeout.connect(self._tick)
         self._timer.start()
 
@@ -52,7 +52,7 @@ class Waveform(QWidget):
         # Asymmetric easing: snap up quickly on attack, glide down on release —
         # this reads as lively yet smooth, like Siri / Voice Memos.
         rising = target > self._display
-        ease = np.where(rising, 0.55, 0.18).astype(np.float32)
+        ease = np.where(rising, 0.65, 0.22).astype(np.float32)
         self._display += (target - self._display) * ease
         self.update()
 

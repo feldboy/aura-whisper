@@ -343,20 +343,21 @@ class SettingsDialog(QDialog):
         self._fit_to_screen()
 
     def _fit_to_screen(self) -> None:
-        """Size the window to comfortably fit the current screen, then center
-        it — so it never opens larger than the display."""
+        """Size the window to comfortably fit the current screen, positioned
+        slightly above center for better ergonomics."""
         screen = self.screen() or QGuiApplication.primaryScreen()
         if screen is None:
-            self.resize(880, 660)
+            self.resize(900, 680)
             return
         avail = screen.availableGeometry()
-        width = min(900, avail.width() - 80)
-        height = min(680, avail.height() - 80)
-        self.setMinimumSize(min(720, width), min(520, height))
+        width = min(920, avail.width() - 60)
+        height = min(700, avail.height() - 60)
+        self.setMinimumSize(min(760, width), min(560, height))
         self.resize(width, height)
+        # Position at 38% from top (slightly above center) for comfort
         self.move(
             avail.x() + (avail.width() - width) // 2,
-            avail.y() + (avail.height() - height) // 2,
+            avail.y() + int((avail.height() - height) * 0.38),
         )
 
     def _accept(self) -> None:
