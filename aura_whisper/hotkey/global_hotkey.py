@@ -41,6 +41,13 @@ KEYCODES: dict[str, int] = {
     "<f1>": 122, "<f2>": 120, "<f3>": 99, "<f4>": 118, "<f5>": 96,
     "<f6>": 97, "<f7>": 98, "<f8>": 100, "<f9>": 101, "<f10>": 109,
     "<f11>": 103, "<f12>": 111,
+    # Punctuation (ANSI layout virtual keycodes).
+    "-": 27, "=": 24, "[": 33, "]": 30, "\\": 42, ";": 41, "'": 39,
+    ",": 43, ".": 47, "/": 44, "`": 50,
+    # Arrows & navigation cluster.
+    "<left>": 123, "<right>": 124, "<down>": 125, "<up>": 126,
+    "<home>": 115, "<end>": 119, "<pageup>": 116, "<pagedown>": 121,
+    "<forward_delete>": 117,
 }
 
 

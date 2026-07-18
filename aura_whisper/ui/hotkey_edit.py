@@ -15,10 +15,18 @@ _MODIFIERS: list[tuple[str, str]] = [
 # Friendly label -> combo token. Tokens match aura_whisper.hotkey parsing.
 _KEYS: list[tuple[str, str]] = (
     [("Space", "<space>"), ("Return", "<return>"), ("Tab", "<tab>"),
-     ("Escape", "<escape>"), ("Delete", "<delete>")]
+     ("Escape", "<escape>"), ("Delete", "<delete>"),
+     ("Forward Delete", "<forward_delete>")]
+    + [("←", "<left>"), ("→", "<right>"), ("↑", "<up>"), ("↓", "<down>")]
+    + [("Home", "<home>"), ("End", "<end>"),
+       ("Page Up", "<pageup>"), ("Page Down", "<pagedown>")]
     + [(c.upper(), c) for c in "abcdefghijklmnopqrstuvwxyz"]
     + [(str(d), f"<{d}>") for d in range(10)]
     + [(f"F{n}", f"<f{n}>") for n in range(1, 13)]
+    + [("- (minus)", "-"), ("= (equals)", "="), ("[", "["), ("]", "]"),
+       ("\\ (backslash)", "\\"), ("; (semicolon)", ";"), ("' (quote)", "'"),
+       (", (comma)", ","), (". (period)", "."), ("/ (slash)", "/"),
+       ("` (backtick)", "`")]
 )
 
 _MOD_TOKENS = {t for _, t in _MODIFIERS}
@@ -36,8 +44,28 @@ _NAMED_KEYS: dict[int, str] = {
     Qt.Key_Return: "<return>",
     Qt.Key_Enter: "<return>",
     Qt.Key_Tab: "<tab>",
-    Qt.Key_Delete: "<delete>",
+    Qt.Key_Delete: "<forward_delete>",
     Qt.Key_Backspace: "<delete>",
+    Qt.Key_Left: "<left>",
+    Qt.Key_Right: "<right>",
+    Qt.Key_Up: "<up>",
+    Qt.Key_Down: "<down>",
+    Qt.Key_Home: "<home>",
+    Qt.Key_End: "<end>",
+    Qt.Key_PageUp: "<pageup>",
+    Qt.Key_PageDown: "<pagedown>",
+    # Punctuation — token is the literal character.
+    Qt.Key_Minus: "-",
+    Qt.Key_Equal: "=",
+    Qt.Key_BracketLeft: "[",
+    Qt.Key_BracketRight: "]",
+    Qt.Key_Backslash: "\\",
+    Qt.Key_Semicolon: ";",
+    Qt.Key_Apostrophe: "'",
+    Qt.Key_Comma: ",",
+    Qt.Key_Period: ".",
+    Qt.Key_Slash: "/",
+    Qt.Key_QuoteLeft: "`",
 }
 
 
@@ -62,6 +90,8 @@ class HotkeyEdit(QWidget):
         super().__init__(parent)
         self._mod_buttons: dict[str, QPushButton] = {}
         self._recording = False
+        # Recording captures raw key events, so the widget must accept focus.
+        self.setFocusPolicy(Qt.StrongFocus)
 
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
@@ -72,17 +102,21 @@ class HotkeyEdit(QWidget):
             btn.setCheckable(True)
             btn.setProperty("modKey", True)
             btn.setFixedWidth(38)
+            btn.setFocusPolicy(Qt.NoFocus)
             self._mod_buttons[token] = btn
             row.addWidget(btn)
 
         self._key = QComboBox(self)
+        self._key.setFocusPolicy(Qt.NoFocus)
         for label, token in _KEYS:
             self._key.addItem(label, token)
         row.addWidget(self._key, 1)
 
-        self._record_btn = QPushButton("Record", self)
+        self._record_btn = QPushButton("⌨  Record", self)
+        self._record_btn.setObjectName("recordHotkeyBtn")
         self._record_btn.setCheckable(True)
-        self._record_btn.setFixedWidth(84)
+        self._record_btn.setFixedWidth(104)
+        self._record_btn.setFocusPolicy(Qt.NoFocus)
         self._record_btn.clicked.connect(self._toggle_record)
         row.addWidget(self._record_btn)
 
@@ -106,12 +140,20 @@ class HotkeyEdit(QWidget):
     def _stop_record(self) -> None:
         self._recording = False
         self._record_btn.setChecked(False)
-        self._record_btn.setText("Record")
+        self._record_btn.setText("⌨  Record")
         self.releaseKeyboard()
+
+    def focusOutEvent(self, event) -> None:  # noqa: N802
+        # Losing focus mid-capture (e.g. clicking elsewhere) cancels cleanly.
+        if self._recording:
+            self._stop_record()
+        super().focusOutEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
         if not self._recording:
             super().keyPressEvent(event)
+            return
+        if event.isAutoRepeat():
             return
         key = event.key()
         if key == Qt.Key_Escape:
@@ -121,7 +163,7 @@ class HotkeyEdit(QWidget):
             return  # wait for the real (non-modifier) key
         token = _qt_key_to_token(key)
         if token is None:
-            return
+            return  # unsupported key — keep listening
         # macOS Qt maps ControlModifier->⌘ and MetaModifier->⌃ by default.
         mods = event.modifiers()
         self._mod_buttons["<cmd>"].setChecked(bool(mods & Qt.ControlModifier))

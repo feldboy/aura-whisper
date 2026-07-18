@@ -389,4 +389,17 @@ QFrame#cardDivider {
     border: none;
 }
 
+QPushButton#recordHotkeyBtn {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    color: #D8DAEE;
+    font-weight: 600;
+}
+QPushButton#recordHotkeyBtn:hover { background: rgba(130, 150, 255, 0.22); }
+QPushButton#recordHotkeyBtn:checked {
+    background: #e0574d;
+    border-color: #ff6a5f;
+    color: #FFFFFF;
+}
+
 

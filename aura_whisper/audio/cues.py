@@ -14,27 +14,30 @@ from typing import Optional
 import numpy as np
 
 _SR = 44_100          # output sample rate
-_CUE_VOLUME = 0.30    # overall gain — present but never startling
+_CUE_VOLUME = 0.22    # soft — a gentle presence, never a "hit"
 
 
-def _note(freq: float, dur: float, *, start: float, total: float) -> np.ndarray:
-    """A single soft sine note with a warm harmonic and a click-free envelope."""
+def _blip(f0: float, f1: float, dur: float, *, start: float, total: float) -> np.ndarray:
+    """A soft sine 'blip' that glides from ``f0`` to ``f1``.
+
+    The rounded attack (no sharp transient) and the pitch glide give a smooth,
+    liquid, water-drop feel — pleasant and calm, never percussive like a key
+    strike. A quiet fifth above adds a touch of warmth.
+    """
     n_total = int(total * _SR)
     n = int(dur * _SR)
     t = np.linspace(0.0, dur, n, endpoint=False)
 
-    # Sine + quiet upper harmonics give a soft, bell-like body.
-    wave = (
-        1.00 * np.sin(2 * np.pi * freq * t)
-        + 0.18 * np.sin(2 * np.pi * freq * 2 * t)
-        + 0.07 * np.sin(2 * np.pi * freq * 3 * t)
-    )
+    # Exponential pitch glide reads as more natural than a linear ramp.
+    freq = f0 * (f1 / f0) ** (t / dur)
+    phase = 2 * np.pi * np.cumsum(freq) / _SR
+    wave = np.sin(phase) + 0.10 * np.sin(1.5 * phase)  # + a soft fifth
 
-    # Fast raised-cosine attack + smooth decay — no clicks at either edge.
+    # Rounded swell-in (no click, no percussive attack) and a smooth fade-out.
     env = np.ones(n, dtype=np.float32)
-    attack = max(1, int(0.008 * _SR))
-    env[:attack] = 0.5 - 0.5 * np.cos(np.linspace(0, np.pi, attack))
-    env[attack:] = np.linspace(1.0, 0.0, n - attack) ** 1.8
+    attack = max(1, int(0.030 * _SR))
+    env[:attack] = np.sin(np.linspace(0.0, np.pi / 2, attack)) ** 2
+    env[attack:] = np.cos(np.linspace(0.0, np.pi / 2, n - attack)) ** 1.4
     wave = (wave * env).astype(np.float32)
 
     out = np.zeros(n_total, dtype=np.float32)
@@ -50,20 +53,20 @@ def _normalize(sig: np.ndarray) -> np.ndarray:
 
 
 def _build_start() -> np.ndarray:
-    """A gentle rising two-note chime — a bright, welcoming 'listening' cue."""
-    total = 0.34
+    """A soft rising water-drop cue — gentle 'listening' feel."""
+    total = 0.30
     return _normalize(
-        _note(587.33, 0.16, start=0.00, total=total)   # D5
-        + _note(880.00, 0.24, start=0.09, total=total)  # A5
+        _blip(520.0, 740.0, 0.26, start=0.00, total=total)
+        + 0.5 * _blip(780.0, 1110.0, 0.20, start=0.05, total=total)
     )
 
 
 def _build_stop() -> np.ndarray:
-    """A soft falling two-note chime — a calm 'captured' cue."""
-    total = 0.34
+    """A soft falling water-drop cue — calm 'captured' feel."""
+    total = 0.30
     return _normalize(
-        _note(783.99, 0.16, start=0.00, total=total)   # G5
-        + _note(523.25, 0.24, start=0.09, total=total)  # C5
+        _blip(660.0, 460.0, 0.26, start=0.00, total=total)
+        + 0.5 * _blip(990.0, 690.0, 0.20, start=0.05, total=total)
     )
 
 
