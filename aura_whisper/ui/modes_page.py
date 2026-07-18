@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -67,97 +68,104 @@ class AIModesPage(QWidget):
         conn_form.addRow(QLabel("Ollama URL"), url_holder)
         conn_form.addRow(QLabel("Default model"), self._default_model)
 
-        # --- modes list (left column) ---
+        # --- mode picker: a compact, full-width list with a small toolbar ---
         self._list = QListWidget(self)
-        self._list.setMinimumWidth(150)
-        self._list.setMinimumHeight(220)
+        self._list.setObjectName("modePicker")
+        self._list.setMinimumHeight(122)
+        self._list.setMaximumHeight(150)
+        self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._list.currentRowChanged.connect(self._on_row_changed)
 
-        add_btn = QPushButton("Add", self)
+        add_btn = QPushButton("＋  New mode", self)
+        add_btn.setObjectName("addModeBtn")
         add_btn.clicked.connect(self._add_mode)
         delete_btn = QPushButton("Delete", self)
         delete_btn.clicked.connect(self._delete_mode)
-        active_btn = QPushButton("Set active", self)
+        active_btn = QPushButton("★  Set as active", self)
         active_btn.clicked.connect(self._set_active)
 
-        list_btns = QHBoxLayout()
-        list_btns.setSpacing(6)
-        list_btns.addWidget(add_btn)
-        list_btns.addWidget(delete_btn)
-        list_btns.addWidget(active_btn)
+        picker_toolbar = QHBoxLayout()
+        picker_toolbar.setContentsMargins(0, 0, 0, 0)
+        picker_toolbar.setSpacing(8)
+        picker_toolbar.addWidget(add_btn)
+        picker_toolbar.addWidget(delete_btn)
+        picker_toolbar.addStretch(1)
+        picker_toolbar.addWidget(active_btn)
 
-        left = QVBoxLayout()
-        left.setContentsMargins(0, 0, 0, 0)
-        left.setSpacing(8)
-        left.addWidget(self._list, 1)
-        left.addLayout(list_btns)
-        left_holder = QWidget(self)
-        left_holder.setLayout(left)
-        left_holder.setFixedWidth(180)
+        picker_col = QVBoxLayout()
+        picker_col.setContentsMargins(0, 0, 0, 0)
+        picker_col.setSpacing(10)
+        picker_col.addWidget(self._list)
+        picker_col.addLayout(picker_toolbar)
+        picker_holder = QWidget(self)
+        picker_holder.setLayout(picker_col)
 
-        # --- mode editor (right column) ---
+        # --- mode editor: a full-width form beneath the picker ---
         self._name = QLineEdit(self)
+        self._name.setPlaceholderText("e.g. Email, Summary, Formal tone…")
         self._name.editingFinished.connect(self._save_current)
         self._prompt = QTextEdit(self)
         self._prompt.setAcceptRichText(False)
         self._prompt.setPlaceholderText(
-            "What should the AI do with your dictated text?"
+            "What should the AI do with your dictated text? "
+            "e.g. “Turn this into a concise, friendly email.”"
         )
-        self._prompt.setMinimumHeight(150)
+        self._prompt.setMinimumHeight(128)
         self._model = QComboBox(self)
         self._model.setEditable(True)
         self._model.setView(QListView(self._model))
         self._enabled = QCheckBox(
-            "Enabled — show this mode in the menu and shortcuts", self
+            "Show this mode in the menu and shortcuts", self
         )
 
         self._mode_hotkey = HotkeyEdit("", self)
         clear_hotkey = QPushButton("Clear", self)
-        clear_hotkey.setFixedWidth(64)
+        clear_hotkey.setFixedWidth(72)
         clear_hotkey.clicked.connect(self._clear_mode_hotkey)
         hotkey_row = QHBoxLayout()
         hotkey_row.setContentsMargins(0, 0, 0, 0)
+        hotkey_row.setSpacing(8)
         hotkey_row.addWidget(self._mode_hotkey, 1)
         hotkey_row.addWidget(clear_hotkey)
         hotkey_holder = QWidget(self)
         hotkey_holder.setLayout(hotkey_row)
 
         editor = QFormLayout()
-        editor.setSpacing(10)
-        editor.setLabelAlignment(Qt.AlignRight | Qt.AlignTop)
+        editor.setSpacing(12)
+        editor.setContentsMargins(0, 0, 0, 0)
+        editor.setLabelAlignment(Qt.AlignLeft | Qt.AlignTop)
+        editor.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
         editor.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        editor.addRow(QLabel("Name"), self._name)
-        editor.addRow(QLabel("Prompt"), self._prompt)
-        editor.addRow(QLabel("Model"), self._model)
-        editor.addRow(QLabel("Shortcut"), hotkey_holder)
-        editor.addRow(QLabel(""), self._enabled)
+        editor.addRow(self._form_label("Name"), self._name)
+        editor.addRow(self._form_label("Prompt"), self._prompt)
+        editor.addRow(self._form_label("Model"), self._model)
+        editor.addRow(self._form_label("Shortcut"), hotkey_holder)
+        editor.addRow(self._form_label(""), self._enabled)
         editor_holder = QWidget(self)
         editor_holder.setLayout(editor)
 
-        modes_body = QHBoxLayout()
-        modes_body.setContentsMargins(0, 0, 0, 0)
-        modes_body.setSpacing(16)
-        modes_body.addWidget(left_holder)
-        modes_body.addWidget(editor_holder, 1)
-        modes_body_holder = QWidget(self)
-        modes_body_holder.setLayout(modes_body)
+        # Thin divider between the picker and the editor inside the card.
+        divider = QFrame(self)
+        divider.setObjectName("cardDivider")
+        divider.setFrameShape(QFrame.NoFrame)
+        divider.setFixedHeight(1)
 
         inner = QWidget(self)
         v = QVBoxLayout(inner)
-        v.setContentsMargins(20, 18, 20, 20)
+        v.setContentsMargins(22, 20, 22, 22)
         v.setSpacing(16)
         v.addWidget(
             page_header(
                 inner,
                 "AI Modes",
                 "Rewrite what you dictate with a local AI model. The mode marked "
-                "✓ runs when you use the \"Dictate with AI\" shortcut.",
+                "★ runs when you use the \"Dictate with AI\" shortcut.",
             )
         )
         v.addWidget(
             card(
                 inner,
-                "Connection",
+                "Ollama connection",
                 [conn_form, self._ollama_status],
                 "AuraWhisper sends your dictation to a local Ollama server, then "
                 "types back the AI's reply.",
@@ -166,13 +174,13 @@ class AIModesPage(QWidget):
         v.addWidget(
             card(
                 inner,
-                "Modes",
-                [modes_body_holder],
-                "Pick a mode on the left to edit its instructions, or add your own "
-                "for emails, summaries, tone fixes — anything.",
-            ),
-            1,
+                "Your modes",
+                [picker_holder, divider, editor_holder],
+                "Pick a mode to edit its instructions, or create your own for "
+                "emails, summaries, tone fixes — anything.",
+            )
         )
+        v.addStretch(1)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -184,6 +192,14 @@ class AIModesPage(QWidget):
         self._refresh_ollama_models()
 
     # --- results consumed by the dialog on save ---
+
+    @staticmethod
+    def _form_label(text: str) -> QLabel:
+        """A right-column form label styled as a small, muted caption."""
+        label = QLabel(text)
+        label.setProperty("fieldLabel", True)
+        label.setMinimumWidth(72)
+        return label
 
     def result(self) -> tuple[list[dict], str, str, str]:
         self._save_current()
@@ -237,7 +253,7 @@ class AIModesPage(QWidget):
         for mode in self.modes:
             label = mode.get("name", "?")
             if label == self.active_mode:
-                label = f"✓ {label}"
+                label = f"★  {label}"
             item = QListWidgetItem(label)
             if not mode.get("enabled", True):
                 item.setForeground(Qt.gray)
@@ -280,7 +296,7 @@ class AIModesPage(QWidget):
         if item is not None:
             label = new_name
             if new_name == self.active_mode:
-                label = f"✓ {label}"
+                label = f"★  {label}"
             item.setText(label)
 
     def _mode_hotkey_value(self) -> str:

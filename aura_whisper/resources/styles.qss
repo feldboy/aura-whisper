@@ -346,4 +346,47 @@ QLabel[toggleHint="true"] {
     padding-bottom: 2px;
 }
 
+/* ---------- Settings: AI Modes page ---------- */
+
+QLabel[fieldLabel="true"] {
+    color: #A6A9C4;
+    font-size: 12px;
+    font-weight: 600;
+    padding-top: 7px;
+}
+
+QListWidget#modePicker {
+    background: rgba(255, 255, 255, 0.035);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    padding: 5px;
+}
+QListWidget#modePicker::item {
+    padding: 8px 12px;
+    margin: 1px 2px;
+    border-radius: 8px;
+    color: #EFF1FA;
+    font-size: 13px;
+}
+QListWidget#modePicker::item:selected {
+    background: rgba(130, 150, 255, 0.30);
+    color: #FFFFFF;
+}
+QListWidget#modePicker::item:hover:!selected {
+    background: rgba(255, 255, 255, 0.06);
+}
+
+QPushButton#addModeBtn {
+    background: rgba(130, 150, 255, 0.18);
+    border: 1px solid rgba(130, 150, 255, 0.35);
+    color: #C7CEFF;
+    font-weight: 600;
+}
+QPushButton#addModeBtn:hover { background: rgba(130, 150, 255, 0.30); }
+
+QFrame#cardDivider {
+    background: rgba(255, 255, 255, 0.08);
+    border: none;
+}
+
 
