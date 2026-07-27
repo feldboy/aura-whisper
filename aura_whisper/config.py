@@ -73,6 +73,10 @@ class Config:
     idle_unload_minutes: int = 5
     cue_sounds: bool = True
     cue_sound: str = "harp"
+    # Transcription model files the user pointed at manually or downloaded
+    # from a custom URL — kept so they stay listed even after switching the
+    # active model away from them.
+    custom_model_paths: list = field(default_factory=list)
 
     @classmethod
     def load(cls, path: Path = CONFIG_PATH) -> "Config":

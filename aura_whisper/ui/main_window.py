@@ -159,6 +159,9 @@ class MainWindow(QMainWindow):
         self._hud = RecordingHUD()
 
         self._pending_mode: dict | None = None
+        self._generation = 0
+        self._pending_gen = -1
+        self._cancel_recording_pending = False
 
         self._recorder = Recorder(self)
         self._recorder.frame_ready.connect(self._waveform.push_frame)
@@ -171,7 +174,7 @@ class MainWindow(QMainWindow):
         self._worker.moveToThread(self._worker_thread)
         self._worker_thread.start()
         self._worker.text_ready.connect(self._on_text_ready)
-        self._worker.error.connect(self._on_error)
+        self._worker.error.connect(self._on_transcribe_error)
         self._worker.started_processing.connect(self._on_transcribe_started)
         self._worker.model_loaded.connect(self._on_model_loaded)
 
@@ -180,7 +183,7 @@ class MainWindow(QMainWindow):
         self._llm.moveToThread(self._llm_thread)
         self._llm_thread.start()
         self._llm.text_ready.connect(self._on_ai_text_ready)
-        self._llm.error.connect(self._on_error)
+        self._llm.error.connect(self._on_rewrite_error)
         self._llm.started_processing.connect(self._on_rewrite_started)
 
         self._paste = ActiveAppPaster()
@@ -198,6 +201,10 @@ class MainWindow(QMainWindow):
         self._ai_hotkey.released.connect(lambda: self._on_hotkey_released())
         self._ai_hotkey.error.connect(self._on_error)
         self._ai_hotkey.start()
+
+        self._cancel_hotkey = GlobalHotkey("<escape>", self)
+        self._cancel_hotkey.pressed.connect(self._on_cancel_hotkey_pressed)
+        self._cancel_hotkey.start()
 
         self._mode_hotkeys: list[GlobalHotkey] = []
         self._build_mode_hotkeys()
@@ -361,6 +368,24 @@ class MainWindow(QMainWindow):
         if self._config.hold_to_talk:
             self._stop_recording()
 
+    def _on_cancel_hotkey_pressed(self) -> None:
+        self._cancel_current()
+
+    def _cancel_current(self) -> None:
+        """Escape: drop whatever is recording/transcribing/rewriting right now
+        so a fresh take can start immediately, and so the discarded result
+        can't surface later and get pasted over the next one."""
+        if self._recorder.is_recording():
+            self._cancel_recording_pending = True
+            self._stop_recording()
+            return
+        if self._pending_gen == self._generation:
+            self._generation += 1
+            self._pending_mode = None
+            self._hud.set_busy(False)
+            self._set_status("Cancelled")
+            self._hud.hide_soon()
+
     def _start_recording(self, mode: dict | None) -> None:
         if self._recorder.is_recording():
             return
@@ -400,14 +425,24 @@ class MainWindow(QMainWindow):
             self._media.resume()
 
     def _on_recording_stopped(self, buffer: np.ndarray) -> None:
+        if self._cancel_recording_pending:
+            self._cancel_recording_pending = False
+            self._pending_mode = None
+            self._hud.set_busy(False)
+            self._set_status("Cancelled")
+            self._hud.hide_soon()
+            return
         if buffer.size < 1600:
             self._hud.set_busy(False)
             self._set_status("Too short")
             self._hud.hide_soon()
             return
+        self._pending_gen = self._generation
         QTimer.singleShot(0, lambda: self._worker.transcribe_requested.emit(buffer))
 
     def _on_text_ready(self, text: str) -> None:
+        if self._pending_gen != self._generation:
+            return
         if not text.strip():
             self._hud.set_busy(False)
             self._set_status("No speech detected")
@@ -421,7 +456,19 @@ class MainWindow(QMainWindow):
         self._deliver(text)
 
     def _on_ai_text_ready(self, text: str) -> None:
+        if self._pending_gen != self._generation:
+            return
         self._deliver(text)
+
+    def _on_transcribe_error(self, message: str) -> None:
+        if self._pending_gen != self._generation:
+            return
+        self._on_error(message)
+
+    def _on_rewrite_error(self, message: str) -> None:
+        if self._pending_gen != self._generation:
+            return
+        self._on_error(message)
 
     def _deliver(self, text: str) -> None:
         self._hud.set_busy(False)
@@ -491,6 +538,7 @@ class MainWindow(QMainWindow):
         try:
             self._hotkey.stop()
             self._ai_hotkey.stop()
+            self._cancel_hotkey.stop()
         except Exception:
             pass
         try:

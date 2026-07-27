@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import time
 from typing import Optional
 
 import numpy as np
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QTimer, Signal
 
 SAMPLE_RATE = 16_000
 BLOCK_SIZE = 1024
 CHANNELS = 1
+
+# How often to check whether the OS default input device changed while idle.
+DEVICE_POLL_MS = 3_000
+# Skip a poll tick within this long after a start()/stop() transition, so we
+# never race sd._terminate() against an in-flight cue sound or a recording.
+TRANSITION_COOLDOWN_S = 1.2
 
 
 class Recorder(QObject):
@@ -23,6 +30,12 @@ class Recorder(QObject):
         self._chunks: list[np.ndarray] = []
         self._recording = False
         self._warm = False
+        self._current_device_name: Optional[str] = None
+        self._last_transition_ts = 0.0
+        self._device_poll_timer = QTimer(self)
+        self._device_poll_timer.setInterval(DEVICE_POLL_MS)
+        self._device_poll_timer.timeout.connect(self._poll_device_change)
+        self._device_poll_timer.start()
 
     def is_recording(self) -> bool:
         return self._recording
@@ -44,7 +57,8 @@ class Recorder(QObject):
         except Exception as e:
             self.error.emit(f"sounddevice unavailable: {e}")
             return False
-        try:
+
+        def _try_open() -> None:
             self._stream = sd.InputStream(
                 samplerate=SAMPLE_RATE,
                 channels=CHANNELS,
@@ -53,10 +67,28 @@ class Recorder(QObject):
                 callback=self._callback,
             )
             self._stream.start()
-        except Exception as e:
-            self._stream = None
-            self.error.emit(f"Failed to open microphone: {e}")
-            return False
+
+        try:
+            _try_open()
+        except Exception:
+            # PortAudio snapshots its device table when the host API is
+            # initialized and does not rescan it while the process is
+            # running, so a device that was hot-plugged (e.g. AirPods
+            # connected after the app was already open) can be invisible
+            # or stale until the table is rebuilt. Force a rescan by
+            # tearing down and reinitializing PortAudio, then retry once.
+            try:
+                sd._terminate()
+                sd._initialize()
+                _try_open()
+            except Exception as e:
+                self._stream = None
+                self.error.emit(f"Failed to open microphone: {e}")
+                return False
+        try:
+            self._current_device_name = sd.query_devices(kind="input")["name"]
+        except Exception:
+            self._current_device_name = None
         return True
 
     def _close_stream(self) -> None:
@@ -77,6 +109,7 @@ class Recorder(QObject):
             self._close_stream()
 
     def start(self) -> bool:
+        self._last_transition_ts = time.monotonic()
         if self._recording:
             return True
         self._chunks = []
@@ -87,6 +120,7 @@ class Recorder(QObject):
         return True
 
     def stop(self) -> np.ndarray:
+        self._last_transition_ts = time.monotonic()
         if not self._recording:
             return np.zeros(0, dtype=np.float32)
         self._recording = False
@@ -101,6 +135,39 @@ class Recorder(QObject):
         self.stopped.emit(buffer)
         return buffer
 
+    def _poll_device_change(self) -> None:
+        """Idle-time watchdog: keep the default input device in sync.
+
+        PortAudio never re-syncs its notion of "the default device" on its
+        own (see the comment in _open_stream), so switching between two
+        already-connected devices in macOS Sound settings would otherwise
+        go unnoticed until the app is restarted. Runs only while idle and
+        well clear of a start()/stop() transition, so it never races the
+        cue sound (a separate PortAudio output stream) or a live recording.
+        """
+        if self._recording:
+            return
+        if time.monotonic() - self._last_transition_ts < TRANSITION_COOLDOWN_S:
+            return
+        try:
+            import sounddevice as sd
+        except Exception:
+            return
+        try:
+            sd._terminate()
+            sd._initialize()
+            current_name = sd.query_devices(kind="input")["name"]
+        except Exception:
+            return
+        if current_name == self._current_device_name:
+            return
+        if self._warm and self._stream is not None:
+            self._close_stream()
+            self._open_stream()
+        else:
+            self._current_device_name = current_name
+
     def shutdown(self) -> None:
         self._recording = False
+        self._device_poll_timer.stop()
         self._close_stream()

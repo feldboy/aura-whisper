@@ -4,7 +4,14 @@ import numpy as np
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 from aura_whisper.config import Config
-from aura_whisper.transcribe.engine import WhisperEngine
+from aura_whisper.models.manager import model_kind
+from aura_whisper.transcribe.engine import FasterWhisperEngine, WhisperEngine
+
+
+def _make_engine(path: str, device: str, compute_type: str):
+    if model_kind(path) == "ctranslate2":
+        return FasterWhisperEngine(path, device=device, compute_type=compute_type)
+    return WhisperEngine(path, device=device, compute_type=compute_type)
 
 
 def _is_english(language: str) -> bool:
@@ -31,8 +38,8 @@ class TranscribeWorker(QObject):
     def __init__(self, config: Config) -> None:
         super().__init__()
         self._config = config
-        self._engine: WhisperEngine | None = None
-        self._english_engine: WhisperEngine | None = None
+        self._engine: WhisperEngine | FasterWhisperEngine | None = None
+        self._english_engine: WhisperEngine | FasterWhisperEngine | None = None
         self._idle_ms = 0
         self._apply_idle_interval()
         # Parented to self, so it moves to the worker thread with moveToThread.
@@ -73,25 +80,23 @@ class TranscribeWorker(QObject):
             self._english_engine.shutdown()
         self._english_engine = None
 
-    def _ensure_engine(self) -> WhisperEngine:
+    def _ensure_engine(self):
         if self._engine is None:
-            self._engine = WhisperEngine(
+            self._engine = _make_engine(
                 self._config.model_path,
-                device=self._config.device,
-                compute_type=self._config.compute_type,
+                self._config.device,
+                self._config.compute_type,
             )
         return self._engine
 
-    def _ensure_english_engine(self) -> WhisperEngine | None:
+    def _ensure_english_engine(self):
         """The optional English-only model, loaded lazily on first use."""
         path = (getattr(self._config, "english_model_path", "") or "").strip()
         if not path or path == (self._config.model_path or "").strip():
             return None
         if self._english_engine is None:
-            self._english_engine = WhisperEngine(
-                path,
-                device=self._config.device,
-                compute_type=self._config.compute_type,
+            self._english_engine = _make_engine(
+                path, self._config.device, self._config.compute_type
             )
         return self._english_engine
 

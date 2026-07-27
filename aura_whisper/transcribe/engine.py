@@ -347,3 +347,79 @@ class WhisperEngine:
                 if stripped:
                     lines.append(stripped)
             return " ".join(lines).strip(), detected
+
+
+class FasterWhisperEngine:
+    """Runs a CTranslate2 model in-process via faster-whisper.
+
+    Duck-type compatible with ``WhisperEngine`` (same public surface) so
+    ``TranscribeWorker`` can use either interchangeably based on
+    ``aura_whisper.models.manager.model_kind()``.
+    """
+
+    def __init__(
+        self,
+        model_path: str,
+        device: str = "auto",
+        compute_type: str = "auto",
+    ) -> None:
+        self.model_path = model_path
+        self.device = device
+        self.compute_type = compute_type
+        self._model = None
+
+    @property
+    def is_loaded(self) -> bool:
+        return self._model is not None
+
+    def load(self) -> None:
+        if self._model is not None:
+            return
+        from faster_whisper import WhisperModel
+
+        compute_type = (
+            "default" if self.compute_type == "auto" else self.compute_type
+        )
+        try:
+            self._model = WhisperModel(
+                self.model_path, device=self.device, compute_type=compute_type
+            )
+        except ValueError:
+            # A stale/incompatible compute_type (e.g. "float16", saved back
+            # when whisper.cpp — which ignores this field — was the only
+            # engine) isn't supported on this device/backend. Fall back to
+            # CTranslate2's own automatic pick rather than failing to load.
+            self._model = WhisperModel(
+                self.model_path, device=self.device, compute_type="default"
+            )
+
+    def shutdown(self) -> None:
+        self._model = None
+
+    def transcribe(
+        self,
+        audio: np.ndarray,
+        language: Optional[str] = None,
+        beam_size: int = 1,
+        vad_filter: bool = True,
+        initial_prompt: str = "",
+    ) -> TranscriptionResult:
+        self.load()
+        if audio.size == 0:
+            return TranscriptionResult(text="", language="", duration=0.0)
+
+        audio = np.asarray(audio, dtype=np.float32).ravel()
+        duration = float(len(audio) / 16000.0)
+        lang = language if language and language != "auto" else None
+
+        segments, info = self._model.transcribe(
+            audio,
+            language=lang,
+            beam_size=max(1, beam_size),
+            vad_filter=vad_filter,
+            initial_prompt=initial_prompt or None,
+        )
+        text = " ".join(seg.text.strip() for seg in segments).strip()
+        return TranscriptionResult(
+            text=text, language=info.language or "", duration=duration
+        )

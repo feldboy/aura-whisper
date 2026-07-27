@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 from typing import Optional
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QTimer, Signal
 
 
 NS_COMMAND = 1 << 20
@@ -113,6 +113,7 @@ class GlobalHotkey(QObject):
         self._global_monitor = None
         self._local_monitor = None
         self._handler_refs: list = []
+        self._trust_poll_timer: Optional[QTimer] = None
         try:
             self._mods, self._keycode = _parse(combo)
         except ValueError as e:
@@ -141,19 +142,48 @@ class GlobalHotkey(QObject):
         if self._mods == 0 and self._keycode is None:
             return False
 
+        # Global key monitors receive nothing unless the process is trusted for
+        # Accessibility. Without this check the hotkey silently does nothing.
+        #
+        # AXIsProcessTrustedWithOptions(prompt=True) shows the system dialog but
+        # returns immediately — it does NOT block until the user grants access.
+        # So the first call here almost always reports untrusted even when the
+        # user is about to approve it. If we gave up right here, the hotkey
+        # would stay dead for this entire run even after approval, and only
+        # work again on the next full restart. Instead, poll in the background
+        # and register the monitors the moment trust is granted.
+        if not _accessibility_trusted(prompt=True):
+            self.error.emit(
+                "Grant Accessibility permission (System Settings › Privacy & "
+                "Security › Accessibility) — the hotkey will activate "
+                "automatically once approved."
+            )
+            self._start_trust_polling()
+            return False
+
+        return self._register_monitors()
+
+    def _start_trust_polling(self) -> None:
+        if self._trust_poll_timer is not None:
+            return
+        self._trust_poll_timer = QTimer(self)
+        self._trust_poll_timer.setInterval(1000)
+        self._trust_poll_timer.timeout.connect(self._check_trust_and_register)
+        self._trust_poll_timer.start()
+
+    def _check_trust_and_register(self) -> None:
+        if not _accessibility_trusted(prompt=False):
+            return
+        self._trust_poll_timer.stop()
+        self._trust_poll_timer = None
+        if self._register_monitors():
+            self.error.emit("Accessibility granted — hotkey is active.")
+
+    def _register_monitors(self) -> bool:
         try:
             from AppKit import NSEvent  # type: ignore
         except Exception as e:
             self.error.emit(f"pyobjc unavailable: {e}")
-            return False
-
-        # Global key monitors receive nothing unless the process is trusted for
-        # Accessibility. Without this check the hotkey silently does nothing.
-        if not _accessibility_trusted(prompt=True):
-            self.error.emit(
-                "Grant Accessibility permission (System Settings › Privacy & "
-                "Security › Accessibility), then restart — the hotkey needs it."
-            )
             return False
 
         # Monitor masks are bit shifts of the event TYPE numbers below.
@@ -226,6 +256,9 @@ class GlobalHotkey(QObject):
         return True
 
     def stop(self) -> None:
+        if self._trust_poll_timer is not None:
+            self._trust_poll_timer.stop()
+            self._trust_poll_timer = None
         try:
             from AppKit import NSEvent  # type: ignore
 

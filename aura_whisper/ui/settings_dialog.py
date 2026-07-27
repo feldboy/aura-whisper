@@ -4,16 +4,14 @@ from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QColor, QGuiApplication, QPalette
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QComboBox,
     QDialog,
-    QDialogButtonBox,
-    QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
-    QListWidget,
-    QListWidgetItem,
     QPushButton,
     QStackedWidget,
     QVBoxLayout,
@@ -27,12 +25,13 @@ from aura_whisper.ui.hotkey_edit import HotkeyEdit
 from aura_whisper.ui.models_page import ModelsPage
 from aura_whisper.ui.modes_page import AIModesPage
 from aura_whisper.ui.ui_kit import (
-    card as _card,
-    checkbox_with_sub as _checkbox_with_sub,
+    ToggleSwitch,
     load_styles,
     page_header as _page_header,
     scroll_page as _scroll_page,
-    subgroup as _subgroup,
+    section as _section,
+    setting_row as _setting_row,
+    tinted_icon,
 )
 
 
@@ -76,14 +75,16 @@ class GeneralPage(QWidget):
             self.language.addItem(label, code)
         idx = self.language.findData(config.language)
         self.language.setCurrentIndex(idx if idx >= 0 else 0)
+        self.language.setMinimumWidth(300)
 
         # Optional second model, used only when auto-detect hears English.
         self.english_model = QComboBox(self)
         self.english_model.addItem("Off — use the main model for English", "")
         try:
-            for m in scan_models(
-                [config.model_path] if config.model_path else None
-            ):
+            extra = list(config.custom_model_paths)
+            if config.model_path:
+                extra.append(config.model_path)
+            for m in scan_models(extra):
                 self.english_model.addItem(
                     f"{m.name}  ·  {format_size(m.size_bytes)}", m.path
                 )
@@ -97,44 +98,21 @@ class GeneralPage(QWidget):
             )
             eng_idx = self.english_model.count() - 1
         self.english_model.setCurrentIndex(eng_idx if eng_idx >= 0 else 0)
+        self.english_model.setMinimumWidth(300)
 
         # --- Hotkeys ---
         self.hotkey = HotkeyEdit(config.hotkey, self)
         self.ai_hotkey = HotkeyEdit(config.ai_hotkey, self)
-
-        self.hold_to_talk = _checkbox_with_sub(
-            self,
-            "Hold-to-talk",
-            "Hold the shortcut down while you speak, release to stop.",
-            config.hold_to_talk,
-        )
+        self.hold_to_talk = ToggleSwitch(config.hold_to_talk, self)
 
         # --- Behavior ---
-        self.auto_paste = _checkbox_with_sub(
-            self,
-            "Type the result where my cursor is",
-            "Drops the finished text straight into the app you were using.",
-            config.auto_paste,
+        self.auto_paste = ToggleSwitch(config.auto_paste, self)
+        self.keep_mic_warm = ToggleSwitch(config.keep_mic_warm, self)
+        self.pause_media = ToggleSwitch(
+            config.pause_media_while_recording, self
         )
-        self.keep_mic_warm = _checkbox_with_sub(
-            self,
-            "Instant start",
-            "Keeps the mic open all the time so recording begins with no delay "
-            "(the orange indicator stays on).",
-            config.keep_mic_warm,
-        )
-        self.pause_media = _checkbox_with_sub(
-            self,
-            "Pause music while I dictate",
-            "Automatically resumes playback when you're done.",
-            config.pause_media_while_recording,
-        )
-        self.cue_sounds = _checkbox_with_sub(
-            self,
-            "Play a sound when recording starts and stops",
-            "A soft cue so you always know when the mic is live.",
-            getattr(config, "cue_sounds", True),
-        )
+        self.cue_sounds = ToggleSwitch(getattr(config, "cue_sounds", True), self)
+        self.vad = ToggleSwitch(config.vad_filter, self)
 
         # Pick which cue sound to play, with an instant preview.
         self.cue_sound = QComboBox(self)
@@ -142,6 +120,7 @@ class GeneralPage(QWidget):
             self.cue_sound.addItem(label, key)
         cue_idx = self.cue_sound.findData(getattr(config, "cue_sound", "harp"))
         self.cue_sound.setCurrentIndex(cue_idx if cue_idx >= 0 else 0)
+        self.cue_sound.setMinimumWidth(150)
         # Connect only after the initial selection so the dialog opens silently.
         self.cue_sound.currentIndexChanged.connect(
             lambda: cues.preview(self.cue_sound.currentData(), "start")
@@ -153,80 +132,109 @@ class GeneralPage(QWidget):
         cue_preview.clicked.connect(
             lambda: cues.preview(self.cue_sound.currentData(), "start")
         )
-        cue_row = QHBoxLayout()
-        cue_row.setContentsMargins(24, 0, 0, 0)
-        cue_row.setSpacing(8)
-        cue_lbl = QLabel("Sound")
-        cue_lbl.setProperty("toggleHint", True)
-        cue_row.addWidget(cue_lbl)
-        cue_row.addWidget(self.cue_sound, 1)
-        cue_row.addWidget(cue_preview)
-        self._cue_sound_row = QWidget(self)
-        self._cue_sound_row.setLayout(cue_row)
-        self.vad = _checkbox_with_sub(
-            self,
-            "Skip silent parts automatically",
-            "Trims long pauses for faster, cleaner transcripts.",
-            config.vad_filter,
-        )
+        cue_control = QWidget(self)
+        cue_ctl_row = QHBoxLayout(cue_control)
+        cue_ctl_row.setContentsMargins(0, 0, 0, 0)
+        cue_ctl_row.setSpacing(8)
+        cue_ctl_row.addWidget(self.cue_sound)
+        cue_ctl_row.addWidget(cue_preview)
 
+        # --- assemble ---
         body = QWidget(self)
         layout = QVBoxLayout(body)
-        layout.setContentsMargins(20, 18, 20, 20)
-        layout.setSpacing(16)
+        layout.setContentsMargins(28, 24, 28, 28)
+        layout.setSpacing(22)
 
         layout.addWidget(
             _page_header(
-                body,
-                "General",
-                "Everyday settings for how AuraWhisper listens and behaves.",
+                body, "General", "Configure dictation and app behavior."
             )
         )
 
-        speech_form = QFormLayout()
-        speech_form.setSpacing(10)
-        speech_form.addRow(QLabel("Language"), self.language)
-        speech_form.addRow(QLabel("English model"), self.english_model)
-
         layout.addWidget(
-            _card(
+            _section(
                 body,
                 "Speech & Language",
-                [speech_form],
-                "Auto figures out which language you spoke each time — speak "
-                "Hebrew in one message and English in the next. If you pick an "
-                "English model, English speech is re-transcribed with it while "
-                "Hebrew keeps using the main model.",
+                [
+                    _setting_row(
+                        body,
+                        "Primary Language",
+                        "Used to identify your speech automatically.",
+                        self.language,
+                    ),
+                    _setting_row(
+                        body,
+                        "English model",
+                        "Re-transcribe English speech with a dedicated model.",
+                        self.english_model,
+                    ),
+                ],
             )
         )
 
-        shortcuts_form = QFormLayout()
-        shortcuts_form.setSpacing(10)
-        shortcuts_form.addRow(QLabel("Dictate"), self.hotkey)
-        shortcuts_form.addRow(QLabel("Dictate with AI"), self.ai_hotkey)
         layout.addWidget(
-            _card(
+            _section(
                 body,
                 "Shortcuts",
-                [shortcuts_form, _subgroup(body, "", [self.hold_to_talk])],
-                "Press once to start, press again to stop. \"Dictate with AI\" "
-                "also rewrites what you said using the active AI mode.",
+                [
+                    _setting_row(
+                        body,
+                        "Dictate",
+                        "Press once to start, again to stop.",
+                        self.hotkey,
+                    ),
+                    _setting_row(
+                        body,
+                        "Dictate with AI",
+                        "Rewrites your speech using the active AI mode.",
+                        self.ai_hotkey,
+                    ),
+                    _setting_row(
+                        body,
+                        "Hold-to-talk",
+                        "Hold the shortcut while you speak, release to stop.",
+                        self.hold_to_talk,
+                    ),
+                ],
             )
         )
 
         layout.addWidget(
-            _card(
+            _section(
                 body,
                 "Behavior",
                 [
-                    _subgroup(
+                    _setting_row(
                         body,
-                        "While recording",
-                        [self.keep_mic_warm, self.pause_media, self.cue_sounds,
-                         self._cue_sound_row],
+                        "Instant start",
+                        "Keep the mic open so recording begins with no delay.",
+                        self.keep_mic_warm,
                     ),
-                    _subgroup(body, "Transcription", [self.vad]),
-                    _subgroup(body, "Output", [self.auto_paste]),
+                    _setting_row(
+                        body,
+                        "Pause music while I dictate",
+                        "Automatically resumes playback when you're done.",
+                        self.pause_media,
+                    ),
+                    _setting_row(
+                        body,
+                        "Play a sound when recording starts and stops",
+                        "A soft cue so you always know when the mic is live.",
+                        self.cue_sounds,
+                    ),
+                    _setting_row(body, "Cue sound", "", cue_control),
+                    _setting_row(
+                        body,
+                        "Skip silent parts automatically",
+                        "Trims long pauses for faster, cleaner transcripts.",
+                        self.vad,
+                    ),
+                    _setting_row(
+                        body,
+                        "Type the result where my cursor is",
+                        "Drops the finished text into the app you were using.",
+                        self.auto_paste,
+                    ),
                 ],
             )
         )
@@ -246,57 +254,73 @@ class AdvancedPage(QWidget):
 
         self.device = QComboBox(self)
         self.device.addItems(DEVICES)
-        self.device.setCurrentText(config.device if config.device in DEVICES else "auto")
+        self.device.setCurrentText(
+            config.device if config.device in DEVICES else "auto"
+        )
+        self.device.setMinimumWidth(160)
 
         self.compute = QComboBox(self)
         self.compute.addItems(COMPUTE_TYPES)
         self.compute.setCurrentText(
             config.compute_type if config.compute_type in COMPUTE_TYPES else "auto"
         )
+        self.compute.setMinimumWidth(160)
 
         self.idle_unload = QComboBox(self)
         for label, minutes in IDLE_UNLOAD_OPTIONS:
             self.idle_unload.addItem(label, minutes)
         idle_idx = self.idle_unload.findData(config.idle_unload_minutes)
         self.idle_unload.setCurrentIndex(idle_idx if idle_idx >= 0 else 2)
+        self.idle_unload.setMinimumWidth(200)
 
         body = QWidget(self)
         layout = QVBoxLayout(body)
-        layout.setContentsMargins(20, 18, 20, 20)
-        layout.setSpacing(16)
+        layout.setContentsMargins(28, 24, 28, 28)
+        layout.setSpacing(22)
 
         layout.addWidget(
             _page_header(
                 body,
                 "Advanced",
-                "Fine-tune performance and memory. The defaults work well for "
-                "most Macs — only change these if you know you need to.",
+                "Fine-tune performance for your hardware. The defaults work "
+                "well for most Macs.",
             )
         )
 
-        perf = QFormLayout()
-        perf.setSpacing(10)
-        perf.addRow(QLabel("Device"), self.device)
-        perf.addRow(QLabel("Compute type"), self.compute)
         layout.addWidget(
-            _card(
+            _section(
                 body,
                 "Performance",
-                [perf],
-                "\"Auto\" picks the fastest safe option for your hardware.",
+                [
+                    _setting_row(
+                        body,
+                        "Device",
+                        "The hardware used for AI processing.",
+                        self.device,
+                    ),
+                    _setting_row(
+                        body,
+                        "Compute type",
+                        "Numeric precision of the model weights.",
+                        self.compute,
+                    ),
+                ],
             )
         )
 
-        mem = QFormLayout()
-        mem.setSpacing(10)
-        mem.addRow(QLabel("Free memory when idle"), self.idle_unload)
         layout.addWidget(
-            _card(
+            _section(
                 body,
                 "Memory",
-                [mem],
-                "Unloads the speech model after a while unused to free up RAM. "
-                "The next dictation reloads it automatically.",
+                [
+                    _setting_row(
+                        body,
+                        "Free memory when idle",
+                        "Unloads the speech model after inactivity; the next "
+                        "dictation reloads it automatically.",
+                        self.idle_unload,
+                    ),
+                ],
             )
         )
 
@@ -308,12 +332,12 @@ class AdvancedPage(QWidget):
 
 
 class SettingsDialog(QDialog):
-    # (emoji, title, subtitle) for each sidebar entry, in order.
+    # (icon, title, subtitle) for each sidebar entry, in order.
     _NAV = [
-        ("🎙", "General", "Language, shortcuts & behavior"),
-        ("✨", "AI Modes", "Rewrite what you dictate"),
-        ("📦", "Models", "Speech-to-text engines"),
-        ("⚙", "Advanced", "Performance & memory"),
+        ("settings", "General", "Language, shortcuts & behavior"),
+        ("sparkles", "AI Modes", "Rewrite what you dictate"),
+        ("package", "Models", "Speech-to-text engines"),
+        ("tune", "Advanced", "Performance & memory"),
     ]
 
     def __init__(self, config: Config, parent=None) -> None:
@@ -325,11 +349,23 @@ class SettingsDialog(QDialog):
         self._config = config
         self.result_config = replace(config)
 
+        # Pin a dark palette on the dialog so unstyled surfaces (e.g. the scroll
+        # viewport, which draws with the Base role) stay dark even when the
+        # system is in light mode. Scoped to this dialog; propagates to children.
+        palette = self.palette()
+        for role in (QPalette.Window, QPalette.Base):
+            palette.setColor(role, QColor("#15161e"))
+        for role in (QPalette.WindowText, QPalette.Text):
+            palette.setColor(role, QColor("#E8E9F3"))
+        self.setPalette(palette)
+
         self.setStyleSheet(load_styles())
 
         self._general_page = GeneralPage(config, self)
         self._modes_page = AIModesPage(config, self)
-        self._models_page = ModelsPage(config.model_path, self)
+        self._models_page = ModelsPage(
+            config.model_path, config.custom_model_paths, self
+        )
         self._advanced_page = AdvancedPage(config, self)
 
         pages = [
@@ -339,42 +375,90 @@ class SettingsDialog(QDialog):
             self._advanced_page,
         ]
 
-        # --- left sidebar navigation ---
-        self._nav = QListWidget(self)
-        self._nav.setObjectName("settingsNav")
-        self._nav.setFixedWidth(214)
-        self._nav.setIconSize(QSize(0, 0))
-        self._nav.setUniformItemSizes(True)
-        for emoji, title, subtitle in self._NAV:
-            item = QListWidgetItem(f"{emoji}   {title}", self._nav)
-            item.setToolTip(subtitle)
-            item.setSizeHint(QSize(0, 46))
+        # --- left sidebar: branding + icon nav ---
+        sidebar = QWidget(self)
+        sidebar.setObjectName("settingsSidebar")
+        sidebar.setFixedWidth(216)
+        side = QVBoxLayout(sidebar)
+        side.setContentsMargins(16, 22, 16, 16)
+        side.setSpacing(12)
+
+        brand = QVBoxLayout()
+        brand.setContentsMargins(8, 0, 8, 0)
+        brand.setSpacing(1)
+        kicker = QLabel("AURAWHISPER", sidebar)
+        kicker.setObjectName("brandKicker")
+        brand_title = QLabel("Settings", sidebar)
+        brand_title.setObjectName("brandTitle")
+        brand.addWidget(kicker)
+        brand.addWidget(brand_title)
+        side.addLayout(brand)
+        side.addSpacing(20)
+
+        self._nav_group = QButtonGroup(self)
+        self._nav_group.setExclusive(True)
+        self._nav_buttons: list[QPushButton] = []
+        for i, (icon_name, title, subtitle) in enumerate(self._NAV):
+            btn = QPushButton(f"   {title}", sidebar)
+            btn.setProperty("navItem", True)
+            btn.setCheckable(True)
+            btn.setToolTip(subtitle)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setIconSize(QSize(18, 18))
+            btn.setIcon(tinted_icon(icon_name, "#B9BCD4", 18))
+            btn.clicked.connect(lambda _=False, idx=i: self._select_page(idx))
+            self._nav_group.addButton(btn, i)
+            self._nav_buttons.append(btn)
+            side.addWidget(btn)
+        side.addStretch(1)
 
         self._stack = QStackedWidget(self)
         for page in pages:
             self._stack.addWidget(page)
 
-        self._nav.currentRowChanged.connect(self._stack.setCurrentIndex)
-        self._nav.setCurrentRow(0)
+        content_row = QHBoxLayout()
+        content_row.setContentsMargins(0, 0, 0, 0)
+        content_row.setSpacing(0)
+        content_row.addWidget(sidebar)
+        content_row.addWidget(self._stack, 1)
 
-        content = QHBoxLayout()
-        content.setSpacing(14)
-        content.addWidget(self._nav)
-        content.addWidget(self._stack, 1)
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.Save | QDialogButtonBox.Cancel, parent=self
-        )
-        buttons.accepted.connect(self._accept)
-        buttons.rejected.connect(self.reject)
+        # --- bottom action bar ---
+        footer = QFrame(self)
+        footer.setObjectName("settingsFooter")
+        footer.setFixedHeight(60)
+        footer_row = QHBoxLayout(footer)
+        footer_row.setContentsMargins(20, 0, 20, 0)
+        footer_row.setSpacing(10)
+        footer_row.addStretch(1)
+        cancel_btn = QPushButton("Cancel", footer)
+        cancel_btn.setObjectName("cancelBtn")
+        cancel_btn.setCursor(Qt.PointingHandCursor)
+        cancel_btn.clicked.connect(self.reject)
+        save_btn = QPushButton("Save", footer)
+        save_btn.setObjectName("saveBtn")
+        save_btn.setDefault(True)
+        save_btn.setCursor(Qt.PointingHandCursor)
+        save_btn.clicked.connect(self._accept)
+        footer_row.addWidget(cancel_btn)
+        footer_row.addWidget(save_btn)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
-        layout.addLayout(content, 1)
-        layout.addWidget(buttons)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addLayout(content_row, 1)
+        layout.addWidget(footer)
 
+        self._select_page(0)
         self._fit_to_screen()
+
+    def _select_page(self, index: int) -> None:
+        """Switch pages and re-tint the sidebar icons for the active row."""
+        self._stack.setCurrentIndex(index)
+        for i, (icon_name, _title, _subtitle) in enumerate(self._NAV):
+            active = i == index
+            self._nav_buttons[i].setChecked(active)
+            color = "#C7CBFF" if active else "#B9BCD4"
+            self._nav_buttons[i].setIcon(tinted_icon(icon_name, color, 18))
 
     def _fit_to_screen(self) -> None:
         """Size the window to comfortably fit the current screen, positioned
@@ -401,6 +485,7 @@ class SettingsDialog(QDialog):
         self.result_config = replace(
             self._config,
             model_path=self._models_page.current_model_path.strip(),
+            custom_model_paths=self._models_page.custom_model_paths,
             english_model_path=g.english_model.currentData() or "",
             language=g.language.currentData() or "auto",
             hotkey=g.hotkey.combo() or "<cmd>+<shift>+<space>",

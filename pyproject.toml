@@ -15,6 +15,11 @@ dependencies = [
     "pynput>=1.7",
     "pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'",
     "pyobjc-framework-Quartz>=10.0; sys_platform == 'darwin'",
+    # CTranslate2/faster-whisper: a second transcription engine for models
+    # only published in that format (whisper.cpp only reads ggml *.bin).
+    "faster-whisper>=1.0",
+    "ctranslate2>=4.0",
+    "huggingface_hub>=0.24",
 ]
 
 [project.scripts]

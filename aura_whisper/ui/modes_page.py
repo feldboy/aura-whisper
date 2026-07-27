@@ -4,7 +4,6 @@ import copy
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QFormLayout,
     QFrame,
@@ -14,6 +13,7 @@ from PySide6.QtWidgets import (
     QListView,
     QListWidget,
     QListWidgetItem,
+    QProgressBar,
     QPushButton,
     QTextEdit,
     QVBoxLayout,
@@ -21,9 +21,15 @@ from PySide6.QtWidgets import (
 )
 
 from aura_whisper.config import Config
-from aura_whisper.llm.ollama_client import OllamaClient, OllamaError
+from aura_whisper.llm.ollama_client import OllamaClient, OllamaError, OllamaPuller
 from aura_whisper.ui.hotkey_edit import HotkeyEdit
-from aura_whisper.ui.ui_kit import card, page_header, scroll_page
+from aura_whisper.ui.ui_kit import (
+    ToggleSwitch,
+    page_header,
+    panel_section,
+    pill,
+    scroll_page,
+)
 
 
 USE_DEFAULT = "(use default model)"
@@ -49,9 +55,12 @@ class AIModesPage(QWidget):
             self._default_model.addItem(config.ollama_model)
         refresh_btn = QPushButton("Refresh", self)
         refresh_btn.clicked.connect(self._refresh_ollama_models)
-        self._ollama_status = QLabel("", self)
-        self._ollama_status.setProperty("hint", True)
-        self._ollama_status.setWordWrap(True)
+        self._ollama_status = pill("Not connected", "neutral", self)
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.addWidget(self._ollama_status)
+        status_row.addStretch(1)
+        self._status_row = status_row
 
         url_row = QHBoxLayout()
         url_row.setContentsMargins(0, 0, 0, 0)
@@ -67,6 +76,26 @@ class AIModesPage(QWidget):
         conn_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         conn_form.addRow(QLabel("Ollama URL"), url_holder)
         conn_form.addRow(QLabel("Default model"), self._default_model)
+
+        # --- pull a new Ollama model by name ---
+        self._pull_input = QLineEdit(self)
+        self._pull_input.setPlaceholderText(
+            "Model to pull, e.g. llama3.1:8b, qwen2.5:7b"
+        )
+        self._pull_btn = QPushButton("Pull", self)
+        self._pull_btn.clicked.connect(self._start_pull)
+        self._pull_puller: OllamaPuller | None = None
+        self._pull_retired: list[OllamaPuller] = []
+        pull_row = QHBoxLayout()
+        pull_row.setContentsMargins(0, 0, 0, 0)
+        pull_row.setSpacing(8)
+        pull_row.addWidget(self._pull_input, 1)
+        pull_row.addWidget(self._pull_btn)
+        self._pull_progress = QProgressBar(self)
+        self._pull_progress.setVisible(False)
+        self._pull_progress.setFixedHeight(6)
+        self._pull_progress.setTextVisible(False)
+        conn_form.addRow(QLabel("Pull a model"), pull_row)
 
         # --- mode picker: a compact, full-width list with a small toolbar ---
         self._list = QListWidget(self)
@@ -114,9 +143,7 @@ class AIModesPage(QWidget):
         self._model = QComboBox(self)
         self._model.setEditable(True)
         self._model.setView(QListView(self._model))
-        self._enabled = QCheckBox(
-            "Show this mode in the menu and shortcuts", self
-        )
+        self._enabled = ToggleSwitch(True, self)
 
         self._mode_hotkey = HotkeyEdit("", self)
         clear_hotkey = QPushButton("Clear", self)
@@ -140,7 +167,18 @@ class AIModesPage(QWidget):
         editor.addRow(self._form_label("Prompt"), self._prompt)
         editor.addRow(self._form_label("Model"), self._model)
         editor.addRow(self._form_label("Shortcut"), hotkey_holder)
-        editor.addRow(self._form_label(""), self._enabled)
+
+        enabled_row = QWidget(self)
+        enabled_layout = QHBoxLayout(enabled_row)
+        enabled_layout.setContentsMargins(0, 0, 0, 0)
+        enabled_label = QLabel(
+            "Show this mode in the menu and shortcuts", enabled_row
+        )
+        enabled_label.setProperty("rowTitle", True)
+        enabled_layout.addWidget(enabled_label)
+        enabled_layout.addStretch(1)
+        enabled_layout.addWidget(self._enabled)
+        editor.addRow(enabled_row)
         editor_holder = QWidget(self)
         editor_holder.setLayout(editor)
 
@@ -152,8 +190,8 @@ class AIModesPage(QWidget):
 
         inner = QWidget(self)
         v = QVBoxLayout(inner)
-        v.setContentsMargins(22, 20, 22, 22)
-        v.setSpacing(16)
+        v.setContentsMargins(28, 24, 28, 28)
+        v.setSpacing(22)
         v.addWidget(
             page_header(
                 inner,
@@ -163,21 +201,20 @@ class AIModesPage(QWidget):
             )
         )
         v.addWidget(
-            card(
+            panel_section(
                 inner,
                 "Ollama connection",
-                [conn_form, self._ollama_status],
+                [conn_form, self._pull_progress, self._status_row],
                 "AuraWhisper sends your dictation to a local Ollama server, then "
-                "types back the AI's reply.",
+                "types back the AI's reply. Pulling a model downloads it into "
+                "Ollama, same as running `ollama pull` in a terminal.",
             )
         )
         v.addWidget(
-            card(
+            panel_section(
                 inner,
                 "Your modes",
                 [picker_holder, divider, editor_holder],
-                "Pick a mode to edit its instructions, or create your own for "
-                "emails, summaries, tone fixes — anything.",
             )
         )
         v.addStretch(1)
@@ -216,13 +253,73 @@ class AIModesPage(QWidget):
         url = self._ollama_url.text().strip() or "http://localhost:11434"
         try:
             self._ollama_models = OllamaClient(url).list_models()
-            self._ollama_status.setText(
-                f"Connected — {len(self._ollama_models)} models available"
+            self._set_status(
+                f"Connected — {len(self._ollama_models)} models available",
+                "success",
             )
         except OllamaError as e:
             self._ollama_models = []
-            self._ollama_status.setText(str(e))
+            self._set_status(str(e), "neutral")
         self._set_model_choices(self._ollama_models)
+
+    def _start_pull(self) -> None:
+        name = self._pull_input.text().strip()
+        if not name or self._pull_puller is not None:
+            return
+        url = self._ollama_url.text().strip() or "http://localhost:11434"
+        self._pull_btn.setText("Pulling…")
+        self._pull_btn.setEnabled(False)
+        self._pull_input.setEnabled(False)
+        self._pull_progress.setVisible(True)
+        self._pull_progress.setRange(0, 0)
+
+        puller = OllamaPuller(url, name)
+        self._pull_puller = puller
+        # Connect to bound methods (not lambdas) so Qt queues the slot onto
+        # the main thread instead of running it on the pull thread, where
+        # touching widgets would crash the app.
+        puller.progress.connect(self._on_pull_progress)
+        puller.status.connect(self._on_pull_status)
+        puller.finished.connect(self._on_pull_finished)
+        puller.error.connect(self._on_pull_error)
+        puller.start()
+
+    def _on_pull_progress(self, done: int, total: int) -> None:
+        if total > 0:
+            self._pull_progress.setRange(0, 100)
+            self._pull_progress.setValue(int(done * 100 / total))
+
+    def _on_pull_status(self, status: str) -> None:
+        self._set_status(status, "neutral")
+
+    def _retire_pull(self) -> None:
+        if self._pull_puller is not None:
+            self._pull_retired.append(self._pull_puller)
+        self._pull_puller = None
+        self._pull_progress.setVisible(False)
+        self._pull_btn.setText("Pull")
+        self._pull_btn.setEnabled(True)
+        self._pull_input.setEnabled(True)
+
+    def _on_pull_finished(self, name: str) -> None:
+        self._retire_pull()
+        self._pull_input.clear()
+        self._refresh_ollama_models()
+        if self._default_model.findText(name) < 0:
+            self._default_model.addItem(name)
+        self._default_model.setCurrentText(name)
+
+    def _on_pull_error(self, message: str) -> None:
+        self._retire_pull()
+        self._pull_btn.setToolTip(message)
+        self._set_status(message, "neutral")
+
+    def _set_status(self, text: str, tone: str) -> None:
+        self._ollama_status.setText(text)
+        self._ollama_status.setProperty("tone", tone)
+        style = self._ollama_status.style()
+        style.unpolish(self._ollama_status)
+        style.polish(self._ollama_status)
 
     def _set_model_choices(self, names: list[str]) -> None:
         default_current = self._default_model.currentText()

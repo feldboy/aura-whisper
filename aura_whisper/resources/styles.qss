@@ -51,13 +51,16 @@ QWidget {
 }
 
 QDialog {
-    background: #1a1b24;
+    background: #15161e;
     color: #E8E9F3;
 }
+QStackedWidget { background: #15161e; }
+QScrollArea { background: transparent; border: none; }
+QScrollArea > QWidget { background: transparent; }
 
 QLineEdit, QComboBox {
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(0, 0, 0, 0.22);
+    border: 1px solid rgba(255, 255, 255, 0.14);
     border-radius: 8px;
     padding: 6px 10px;
     color: #EFF1FA;
@@ -268,9 +271,9 @@ QLabel[sectionTitle="true"] {
 /* ---------- Settings: cards & hotkey picker ---------- */
 
 QFrame[card="true"] {
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.045);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 12px;
 }
 QFrame[card="true"] QLabel[sectionTitle="true"] { padding-top: 0; }
 
@@ -402,4 +405,140 @@ QPushButton#recordHotkeyBtn:checked {
     color: #FFFFFF;
 }
 
+
+/* ======================================================================
+   Aura redesign — inset-grouped sections, rows, pills, footer, sidebar
+   ====================================================================== */
+
+/* Uppercase caption sitting above each inset-grouped card. */
+QLabel[sectionCaption="true"] {
+    color: #9C9CB0;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 1.1px;
+    padding-left: 4px;
+}
+
+/* A single row inside an inset-grouped card. */
+QWidget[settingRow="true"] { background: transparent; }
+QLabel[rowTitle="true"] {
+    color: #FFFFFF;
+    font-size: 13px;
+    font-weight: 600;
+}
+QLabel[rowSubtitle="true"] {
+    color: #9A9DB8;
+    font-size: 11.5px;
+}
+QFrame[rowDivider="true"] {
+    background: rgba(255, 255, 255, 0.06);
+    border: none;
+    margin-left: 16px;
+    margin-right: 16px;
+}
+
+/* Status / badge pills. */
+QLabel[pill="true"] {
+    border-radius: 9px;
+    padding: 3px 10px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+}
+QLabel[pill="true"][tone="neutral"] {
+    background: rgba(255, 255, 255, 0.08);
+    color: #C6C5D6;
+}
+QLabel[pill="true"][tone="accent"] {
+    background: rgba(120, 134, 255, 0.22);
+    color: #C7CBFF;
+}
+QLabel[pill="true"][tone="success"] {
+    background: rgba(52, 199, 129, 0.16);
+    color: #6FE0A8;
+}
+
+/* Bottom action bar. */
+QFrame#settingsFooter {
+    background: rgba(12, 14, 22, 0.55);
+    border: none;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+QPushButton#saveBtn {
+    background: #7886ff;
+    border: 1px solid #8b97ff;
+    border-radius: 9px;
+    color: #FFFFFF;
+    font-weight: 700;
+    padding: 7px 22px;
+}
+QPushButton#saveBtn:hover { background: #8b97ff; }
+QPushButton#saveBtn:pressed { background: #6b7aff; }
+QPushButton#cancelBtn {
+    background: rgba(255, 255, 255, 0.07);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 9px;
+    color: #E8E9F3;
+    font-weight: 600;
+    padding: 7px 18px;
+}
+QPushButton#cancelBtn:hover { background: rgba(255, 255, 255, 0.12); }
+
+/* Sidebar branding header. */
+QLabel#brandKicker {
+    color: #8F8FA0;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1.6px;
+}
+QLabel#brandTitle {
+    color: #bdc2ff;
+    font-size: 20px;
+    font-weight: 700;
+}
+
+/* Sidebar nav rows (icon + label buttons). */
+QWidget#settingsSidebar {
+    background: rgba(255, 255, 255, 0.02);
+    border-right: 1px solid rgba(255, 255, 255, 0.06);
+}
+QPushButton[navItem="true"] {
+    background: transparent;
+    border: none;
+    border-radius: 9px;
+    color: #B9BCD4;
+    font-size: 13px;
+    font-weight: 600;
+    text-align: left;
+    padding: 15px 12px;
+}
+QPushButton[navItem="true"]:hover {
+    background: rgba(255, 255, 255, 0.05);
+    color: #E8E9F3;
+}
+QPushButton[navItem="true"]:checked {
+    background: rgba(120, 134, 255, 0.20);
+    color: #C7CBFF;
+}
+
+/* Download / secondary action buttons (Models page). */
+QPushButton#downloadBtn {
+    background: #7886ff;
+    border: 1px solid #8b97ff;
+    border-radius: 8px;
+    color: #FFFFFF;
+    font-weight: 700;
+    padding: 6px 16px;
+}
+QPushButton#downloadBtn:hover { background: #8b97ff; }
+QPushButton#downloadBtn:pressed { background: #6b7aff; }
+QPushButton#secondaryBtn {
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 8px;
+    color: #E8E9F3;
+    font-weight: 600;
+    padding: 6px 14px;
+}
+QPushButton#secondaryBtn:hover { background: rgba(255, 255, 255, 0.12); }
 
