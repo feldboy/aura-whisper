@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import QPoint, QRect, Qt, QTimer
+from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtGui import QColor, QCursor, QPainter, QPainterPath
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QWidget
 
@@ -52,14 +52,13 @@ class _RecDot(QWidget):
 
 
 class RecordingHUD(QWidget):
-    """Compact pill shown centered just above the text field (or caret line)
-    the user is dictating into, so it never covers what they type. Falls
-    back to above the mouse pointer.
+    """Compact pill shown just above the mouse pointer when dictation starts
+    (top-center under the notch if the pointer's screen is unknown).
 
     Never takes focus, so the paste target keeps its cursor.
     """
 
-    _GAP = 6  # px between the caret/field and the pill
+    _GAP = 10  # px between the pointer tip and the pill
 
     def __init__(self) -> None:
         super().__init__(
@@ -75,7 +74,7 @@ class RecordingHUD(QWidget):
         # inactive — and a menu-bar background app is always inactive.
         self.setAttribute(Qt.WA_MacAlwaysShowToolWindow)
         self.setFixedSize(224, 30)
-        self._anchor: QRect | None = None
+        self._anchor: QPoint | None = None
 
         self._dot = _RecDot(self)
 
@@ -159,21 +158,14 @@ class RecordingHUD(QWidget):
             self.move(target)
         self.raise_()
 
-    def set_anchor(self, rect: tuple[float, float, float, float] | None) -> None:
-        """Place the pill centered above this screen rect (the focused field
-        or caret line) from now on; None = above the mouse pointer."""
-        if rect is None:
-            pos = QCursor.pos()
-            self._anchor = QRect(pos.x(), pos.y(), 1, 18)
-        else:
-            x, y, w, h = rect
-            self._anchor = QRect(int(x), int(y), max(1, int(w)), max(1, int(h)))
+    def anchor_to_cursor(self) -> None:
+        """Show the pill next to where the mouse pointer is right now (the
+        user just clicked the field they're dictating into)."""
+        self._anchor = QCursor.pos()
 
     def _target_pos(self) -> QPoint:
         anchor = self._anchor
-        screen = None
-        if anchor is not None:
-            screen = QApplication.screenAt(anchor.center())
+        screen = QApplication.screenAt(anchor) if anchor is not None else None
         if screen is None:
             anchor = None
             screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
@@ -183,10 +175,12 @@ class RecordingHUD(QWidget):
         if anchor is None:
             # Right under the menu bar / camera notch.
             return QPoint(avail.x() + (avail.width() - self.width()) // 2, avail.y() + 6)
-        x = anchor.center().x() - self.width() // 2
-        y = anchor.top() - self._GAP - self.height()
+        # Centered just above the pointer, so it covers neither the pointer
+        # nor the line being clicked into.
+        x = anchor.x() - self.width() // 2
+        y = anchor.y() - self._GAP - self.height()
         if y < avail.top() + 4:
-            y = anchor.bottom() + self._GAP  # no room above: go below
+            y = anchor.y() + 24  # no room above: below the pointer arrow
         x = max(avail.left() + 4, min(x, avail.right() - self.width() - 4))
         y = max(avail.top() + 4, min(y, avail.bottom() - self.height() - 4))
         return QPoint(x, y)

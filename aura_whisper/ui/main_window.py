@@ -414,7 +414,7 @@ class MainWindow(QMainWindow):
             return
         self._selection_mode = mode
         self._paste.remember_frontmost()
-        self._hud.set_anchor(self._paste.caret_rect())
+        self._hud.anchor_to_cursor()
         # Don't show the HUD yet: raising it can make us the active app, and
         # then the ⌘C below would go to us instead of the user's app.
         text = self._paste.selected_text_ax()
@@ -501,7 +501,7 @@ class MainWindow(QMainWindow):
         self._recorder.refresh_devices()
         self._pending_mode = mode
         self._paste.remember_frontmost()
-        self._hud.set_anchor(self._paste.caret_rect())
+        self._hud.anchor_to_cursor()
         self._waveform.set_active(True)
         self._hud.set_recording(True)
         if mode is not None:

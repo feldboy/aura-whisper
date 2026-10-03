@@ -101,69 +101,6 @@ class ActiveAppPaster:
         except Exception:
             return None
 
-    def caret_rect(self) -> tuple[float, float, float, float] | None:
-        """Screen rect (x, y, w, h; top-left origin, points) to anchor the
-        HUD to in the remembered app: the focused text field when it's a
-        normal-sized one, else the line with the text caret (big editors and
-        documents). None when the app exposes neither through Accessibility
-        (the caller then falls back to the mouse pointer)."""
-        if not self._is_macos or self._remembered_pid is None:
-            return None
-        try:
-            from ApplicationServices import (
-                AXUIElementCopyAttributeValue,
-                AXUIElementCopyParameterizedAttributeValue,
-                AXUIElementCreateApplication,
-                AXUIElementSetMessagingTimeout,
-                AXValueGetValue,
-                kAXValueCGPointType,
-                kAXValueCGRectType,
-                kAXValueCGSizeType,
-            )
-
-            app = AXUIElementCreateApplication(self._remembered_pid)
-            # A hung app must never stall the hotkey; AX's default is ~6 s.
-            AXUIElementSetMessagingTimeout(app, 0.25)
-            err, focused = AXUIElementCopyAttributeValue(
-                app, "AXFocusedUIElement", None
-            )
-            if err or focused is None:
-                return None
-
-            field = None
-            err, pos = AXUIElementCopyAttributeValue(focused, "AXPosition", None)
-            err2, size = AXUIElementCopyAttributeValue(focused, "AXSize", None)
-            if not err and not err2 and pos is not None and size is not None:
-                ok, p = AXValueGetValue(pos, kAXValueCGPointType, None)
-                ok2, sz = AXValueGetValue(size, kAXValueCGSizeType, None)
-                if ok and ok2 and sz.width > 0 and sz.height > 0:
-                    field = (p.x, p.y, sz.width, sz.height)
-            # A single-line box, chat input or form field: anchor to the
-            # whole field so the HUD sits centered over it.
-            if field is not None and field[3] <= 200:
-                return field
-
-            # A tall editor / document / web view: anchor to the caret line.
-            err, sel_range = AXUIElementCopyAttributeValue(
-                focused, "AXSelectedTextRange", None
-            )
-            if not err and sel_range is not None:
-                err, bounds = AXUIElementCopyParameterizedAttributeValue(
-                    focused, "AXBoundsForRange", sel_range, None
-                )
-                if not err and bounds is not None:
-                    ok, rect = AXValueGetValue(bounds, kAXValueCGRectType, None)
-                    if ok and (rect.origin.x or rect.origin.y) and rect.size.height > 0:
-                        return (
-                            rect.origin.x,
-                            rect.origin.y,
-                            rect.size.width,
-                            rect.size.height,
-                        )
-            return None
-        except Exception:
-            return None
-
     # --- reading the current selection (for "rewrite selection") ---
 
     def modifiers_down(self) -> bool:
