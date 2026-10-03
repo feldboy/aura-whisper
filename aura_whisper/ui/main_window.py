@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import numpy as np
 from PySide6.QtCore import QPoint, QSize, Qt, QThread, QTimer, Slot
 from PySide6.QtGui import (
@@ -36,7 +38,19 @@ from aura_whisper.ui.settings_dialog import SettingsDialog
 from aura_whisper.ui.transcription_view import TranscriptionView
 from aura_whisper.ui.waveform import Waveform
 from aura_whisper.vibrancy import apply_vibrancy, style_native_window
-from aura_whisper.ui.ui_kit import load_styles
+from aura_whisper.ui.ui_kit import SECONDARY_LABEL, load_styles, tinted_icon
+
+
+def _log(msg: str) -> None:
+    """Append a line to ~/Library/Logs/AuraWhisper.log (menu-bar app has no console)."""
+    try:
+        from pathlib import Path
+
+        path = Path.home() / "Library" / "Logs" / "AuraWhisper.log"
+        with path.open("a") as f:
+            f.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
+    except Exception:
+        pass
 
 
 def _make_tray_icon() -> QIcon:
@@ -94,7 +108,7 @@ class RootFrame(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         path = QPainterPath()
         path.addRoundedRect(self.rect().adjusted(0, 0, -1, -1), 18, 18)
-        painter.fillPath(path, QColor(18, 18, 26, 210))
+        painter.fillPath(path, QColor(30, 30, 32, 225))
         painter.setPen(QColor(255, 255, 255, 28))
         painter.drawPath(path)
 
@@ -110,12 +124,13 @@ class TitleBar(QWidget):
 
         self.mode_label = QLabel("", self)
         self.mode_label.setObjectName("modeLabel")
-        self.mode_label.setStyleSheet("color: rgba(255,255,255,120); font-size: 11px;")
 
-        self.settings_btn = QPushButton("⚙", self)
+        self.settings_btn = QPushButton(self)
         self.settings_btn.setObjectName("toolBtn")
-        self.settings_btn.setCursor(Qt.PointingHandCursor)
-        self.settings_btn.setFixedSize(QSize(28, 24))
+        self.settings_btn.setToolTip("Settings")
+        self.settings_btn.setIcon(tinted_icon("settings", SECONDARY_LABEL, 16))
+        self.settings_btn.setIconSize(QSize(16, 16))
+        self.settings_btn.setFixedSize(QSize(28, 26))
 
         # Left inset leaves room for the native macOS traffic-light controls.
         layout = QHBoxLayout(self)
@@ -123,8 +138,8 @@ class TitleBar(QWidget):
         layout.setSpacing(8)
         layout.addWidget(self.title)
         layout.addStretch(1)
-        layout.addWidget(self.mode_label)
-        layout.addWidget(self.settings_btn)
+        layout.addWidget(self.mode_label, 0, Qt.AlignVCenter)
+        layout.addWidget(self.settings_btn, 0, Qt.AlignVCenter)
 
 
 class MainWindow(QMainWindow):
@@ -177,6 +192,8 @@ class MainWindow(QMainWindow):
         self._worker.error.connect(self._on_transcribe_error)
         self._worker.started_processing.connect(self._on_transcribe_started)
         self._worker.model_loaded.connect(self._on_model_loaded)
+        # Streaming: the worker transcribes finished phrases while recording.
+        self._recorder.frame_ready.connect(self._worker.stream_frame)
 
         self._llm = LLMWorker(config)
         self._llm_thread = QThread(self)
@@ -201,6 +218,16 @@ class MainWindow(QMainWindow):
         self._ai_hotkey.released.connect(lambda: self._on_hotkey_released())
         self._ai_hotkey.error.connect(self._on_error)
         self._ai_hotkey.start()
+
+        self._selection_hotkey = GlobalHotkey(config.rewrite_selection_hotkey, self)
+        self._selection_hotkey.pressed.connect(self._on_rewrite_selection_pressed)
+        self._selection_hotkey.error.connect(self._on_error)
+        if config.rewrite_selection_hotkey:
+            ok = self._selection_hotkey.start()
+            _log(f"rewrite-selection hotkey {config.rewrite_selection_hotkey!r} active={ok}")
+        self._selection_mode: dict | None = None
+        self._selection_deadline = 0.0
+        self._selection_change_count = -1
 
         self._cancel_hotkey = GlobalHotkey("<escape>", self)
         self._cancel_hotkey.pressed.connect(self._on_cancel_hotkey_pressed)
@@ -293,6 +320,10 @@ class MainWindow(QMainWindow):
             self._llm.update_config(self._config)
             self._hotkey.set_combo(self._config.hotkey)
             self._ai_hotkey.set_combo(self._config.ai_hotkey)
+            self._selection_hotkey.stop()
+            if self._config.rewrite_selection_hotkey:
+                self._selection_hotkey.set_combo(self._config.rewrite_selection_hotkey)
+                self._selection_hotkey.start()
             self._build_mode_hotkeys()
             self._recorder.set_warm(self._config.keep_mic_warm)
             self._update_mode_label()
@@ -351,7 +382,11 @@ class MainWindow(QMainWindow):
         for hk in self._mode_hotkeys:
             hk.stop()
         self._mode_hotkeys = []
-        used = {self._config.hotkey, self._config.ai_hotkey}
+        used = {
+            self._config.hotkey,
+            self._config.ai_hotkey,
+            self._config.rewrite_selection_hotkey,
+        }
         for mode in self._config.modes:
             combo = (mode.get("hotkey") or "").strip()
             if not combo or not mode.get("enabled", True) or combo in used:
@@ -363,6 +398,75 @@ class MainWindow(QMainWindow):
             hk.error.connect(self._on_error)
             hk.start()
             self._mode_hotkeys.append(hk)
+
+    # --- rewrite selection: ⌘C the selection, run the AI mode, paste back ---
+
+    def _on_rewrite_selection_pressed(self) -> None:
+        _log(
+            f"rewrite-selection pressed (recording={self._recorder.is_recording()}, "
+            f"in_progress={self._selection_mode is not None})"
+        )
+        if self._recorder.is_recording() or self._selection_mode is not None:
+            return
+        mode = self._config.get_active_mode()
+        if mode is None:
+            self._set_status("No AI mode enabled — check Settings")
+            return
+        self._selection_mode = mode
+        self._paste.remember_frontmost()
+        self._hud.set_anchor(self._paste.caret_rect())
+        # Don't show the HUD yet: raising it can make us the active app, and
+        # then the ⌘C below would go to us instead of the user's app.
+        text = self._paste.selected_text_ax()
+        _log(f"AX selection: {None if text is None else len(text)} chars")
+        if text and text.strip():
+            self._start_selection_rewrite(text)
+            return
+        self._selection_deadline = time.monotonic() + 2.0
+        self._copy_selection_when_keys_released()
+
+    def _copy_selection_when_keys_released(self) -> None:
+        # Wait for the hotkey's modifiers to come up so the target app sees a
+        # clean ⌘C rather than e.g. ⌃⌘C.
+        if self._paste.modifiers_down() and time.monotonic() < self._selection_deadline:
+            QTimer.singleShot(15, self._copy_selection_when_keys_released)
+            return
+        self._paste.activate_remembered()
+        QTimer.singleShot(60, self._send_selection_copy)
+
+    def _send_selection_copy(self) -> None:
+        self._selection_change_count = self._paste.pasteboard_change_count()
+        sent = self._paste.send_copy()
+        _log(
+            f"sent cmd+c={sent} modifiers_down={self._paste.modifiers_down()} "
+            f"change_count={self._selection_change_count}"
+        )
+        self._selection_deadline = time.monotonic() + 0.8
+        QTimer.singleShot(40, self._read_copied_selection)
+
+    def _read_copied_selection(self) -> None:
+        text = self._paste.copied_text(self._selection_change_count)
+        if text is None and time.monotonic() < self._selection_deadline:
+            QTimer.singleShot(30, self._read_copied_selection)
+            return
+        _log(
+            f"copied: {None if text is None else len(text)} chars, "
+            f"change_count now={self._paste.pasteboard_change_count()}"
+        )
+        if not text or not text.strip():
+            self._selection_mode = None
+            self._hud.show_pill("Select text first")
+            self._hud.hide_soon(1800)
+            return
+        self._start_selection_rewrite(text)
+
+    def _start_selection_rewrite(self, text: str) -> None:
+        mode = self._selection_mode
+        self._selection_mode = None
+        self._generation += 1
+        self._pending_gen = self._generation
+        self._set_busy_status(f"Rewriting selection · {mode.get('name', 'AI')}")
+        self._llm.rewrite_requested.emit(text, mode)
 
     def _on_hotkey_released(self) -> None:
         if self._config.hold_to_talk:
@@ -392,8 +496,12 @@ class MainWindow(QMainWindow):
         if not self._config.is_configured:
             self._set_status("Set model folder in Settings")
             return
+        # Pick up headphones/mics connected since the last take. Must run
+        # before the start cue: rebuilding PortAudio stops any playing sound.
+        self._recorder.refresh_devices()
         self._pending_mode = mode
         self._paste.remember_frontmost()
+        self._hud.set_anchor(self._paste.caret_rect())
         self._waveform.set_active(True)
         self._hud.set_recording(True)
         if mode is not None:
@@ -409,7 +517,9 @@ class MainWindow(QMainWindow):
         if getattr(self._config, "cue_sounds", True):
             cues.set_theme(getattr(self._config, "cue_sound", "harp"))
             cues.play_start()
-        self._recorder.start()
+        self._worker.stream_begin_requested.emit()
+        if not self._recorder.start():
+            self._worker.stream_cancel_requested.emit()
 
     def _stop_recording(self) -> None:
         if not self._recorder.is_recording():
@@ -428,11 +538,13 @@ class MainWindow(QMainWindow):
         if self._cancel_recording_pending:
             self._cancel_recording_pending = False
             self._pending_mode = None
+            self._worker.stream_cancel_requested.emit()
             self._hud.set_busy(False)
             self._set_status("Cancelled")
             self._hud.hide_soon()
             return
         if buffer.size < 1600:
+            self._worker.stream_cancel_requested.emit()
             self._hud.set_busy(False)
             self._set_status("Too short")
             self._hud.hide_soon()
@@ -481,6 +593,7 @@ class MainWindow(QMainWindow):
         self._hud.hide_soon()
 
     def _on_error(self, message: str) -> None:
+        _log(f"error: {message}")
         self._hud.set_busy(False)
         self._set_status(message)
         self._hud.hide_soon(3000)
@@ -538,6 +651,7 @@ class MainWindow(QMainWindow):
         try:
             self._hotkey.stop()
             self._ai_hotkey.stop()
+            self._selection_hotkey.stop()
             self._cancel_hotkey.stop()
         except Exception:
             pass

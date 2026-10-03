@@ -77,6 +77,21 @@ def kill_stale_servers() -> None:
         pass
 
 
+def _perf_cores() -> int:
+    """Performance-core count on Apple Silicon (efficiency cores only slow
+    a CPU-bound decode down); total CPUs elsewhere."""
+    try:
+        out = subprocess.run(
+            ["sysctl", "-n", "hw.perflevel0.physicalcpu"],
+            capture_output=True, text=True, timeout=2,
+        ).stdout.strip()
+        if out.isdigit() and int(out) > 0:
+            return int(out)
+    except Exception:
+        pass
+    return max(1, os.cpu_count() or 4)
+
+
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
@@ -183,7 +198,7 @@ class WhisperEngine:
             "--host", "127.0.0.1",
             "--port", str(port),
             "-l", "auto",
-            "-t", str(max(1, os.cpu_count() or 4)),
+            "-t", str(_perf_cores()),
         ]
         if self.device == "cpu":
             cmd.append("-ng")
@@ -218,8 +233,14 @@ class WhisperEngine:
         if self._server is not None:
             try:
                 self._server.terminate()
+                # Reap it so the process (and its model memory) is fully gone.
+                self._server.wait(timeout=3)
             except Exception:
-                pass
+                try:
+                    self._server.kill()
+                    self._server.wait(timeout=2)
+                except Exception:
+                    pass
             if self._server in _SPAWNED_SERVERS:
                 _SPAWNED_SERVERS.remove(self._server)
             self._server = None
@@ -253,24 +274,36 @@ class WhisperEngine:
         resolved_lang = detected or (lang if lang != "auto" else "")
         return TranscriptionResult(text=text, language=resolved_lang, duration=duration)
 
-    def _transcribe_server(
-        self, audio: np.ndarray, lang: str, initial_prompt: str, duration: float
-    ) -> tuple[str, str]:
+    def detect_language(self, audio: np.ndarray) -> tuple[str, float]:
+        """Spoken language of ``audio`` ("hebrew", "english", …) and its
+        probability (-1.0 = not computed), or ("", 0.0) if unknown. Costs one encoder pass; the streaming worker runs it while
+        the user is still talking so later passes can skip auto-detect
+        (which otherwise doubles every transcription's cost)."""
+        self.load()
+        if self._server is None or self._server.poll() is not None:
+            return "", 0.0
+        audio = np.asarray(audio, dtype=np.float32).ravel()
+        data = self._post_inference(
+            audio,
+            {
+                "response_format": "verbose_json",
+                "language": "auto",
+                "detect_language": "true",
+                # The probability table costs a second detect pass (~0.5 s).
+                "no_language_probabilities": "true",
+            },
+            float(len(audio) / 16000.0),
+        )
+        language = str(data.get("detected_language") or data.get("language") or "")
+        return language, -1.0
+
+    def _post_inference(
+        self, audio: np.ndarray, fields: dict[str, str], duration: float
+    ) -> dict:
         with tempfile.TemporaryDirectory(prefix="aura_whisper_") as tmp:
             wav_path = Path(tmp) / "input.wav"
             _write_wav(wav_path, audio)
             wav_bytes = wav_path.read_bytes()
-
-        # verbose_json reports the language whisper actually used, which lets
-        # the caller route English speech to a dedicated model. Skipping the
-        # language-probability table keeps this free (no extra detect pass).
-        fields = {
-            "response_format": "verbose_json",
-            "language": lang,
-            "no_language_probabilities": "true",
-        }
-        if initial_prompt:
-            fields["prompt"] = initial_prompt
         body, boundary = _multipart(fields, "file", "input.wav", wav_bytes)
         req = urllib.request.Request(
             f"{self._server_url}/inference",
@@ -286,6 +319,22 @@ class WhisperEngine:
             raise RuntimeError(f"whisper-server request failed: {e}") from e
         if "error" in data:
             raise RuntimeError(f"whisper-server error: {data['error']}")
+        return data
+
+    def _transcribe_server(
+        self, audio: np.ndarray, lang: str, initial_prompt: str, duration: float
+    ) -> tuple[str, str]:
+        # verbose_json reports the language whisper actually used, which lets
+        # the caller route English speech to a dedicated model. Skipping the
+        # language-probability table keeps this free (no extra detect pass).
+        fields = {
+            "response_format": "verbose_json",
+            "language": lang,
+            "no_language_probabilities": "true",
+        }
+        if initial_prompt:
+            fields["prompt"] = initial_prompt
+        data = self._post_inference(audio, fields, duration)
         text = " ".join((data.get("text") or "").split()).strip()
         detected = str(data.get("language") or "")
         return text, detected
@@ -307,7 +356,7 @@ class WhisperEngine:
                 "-m", self._resolved_model or "",
                 "-f", str(wav_path),
                 "-l", lang,
-                "-t", str(max(1, os.cpu_count() or 4)),
+                "-t", str(_perf_cores()),
                 "-nt",
                 "-np",
             ]
@@ -382,7 +431,11 @@ class FasterWhisperEngine:
         )
         try:
             self._model = WhisperModel(
-                self.model_path, device=self.device, compute_type=compute_type
+                self.model_path,
+                device=self.device,
+                compute_type=compute_type,
+                # Default is 4 threads; all performance cores is ~30% faster.
+                cpu_threads=_perf_cores(),
             )
         except ValueError:
             # A stale/incompatible compute_type (e.g. "float16", saved back
@@ -390,11 +443,27 @@ class FasterWhisperEngine:
             # engine) isn't supported on this device/backend. Fall back to
             # CTranslate2's own automatic pick rather than failing to load.
             self._model = WhisperModel(
-                self.model_path, device=self.device, compute_type="default"
+                self.model_path,
+                device=self.device,
+                compute_type="default",
+                cpu_threads=_perf_cores(),
             )
 
     def shutdown(self) -> None:
         self._model = None
+        # CTranslate2 releases its weights when the model object is freed;
+        # collect now so the RAM comes back immediately, not at some later GC.
+        import gc
+
+        gc.collect()
+
+    def detect_language(self, audio: np.ndarray) -> tuple[str, float]:
+        """Spoken language code of ``audio`` ("he", "en", …) and its
+        probability; see ``WhisperEngine.detect_language``."""
+        self.load()
+        audio = np.asarray(audio, dtype=np.float32).ravel()
+        language, prob, _all = self._model.detect_language(audio)
+        return language or "", float(prob or 0.0)
 
     def transcribe(
         self,

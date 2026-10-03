@@ -50,7 +50,7 @@ CURATED_MODELS: list[CuratedModel] = [
         filename="ggml-large-v3-turbo.bin",
         url="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
         size_hint="1.6 GB",
-        description="Best overall quality for Hebrew + English. Recommended.",
+        description="Stock multilingual model — great for English, weak for Hebrew. Use it as the English model, not the main one.",
     ),
     CuratedModel(
         name="Large v3 Turbo (q5_0)",
@@ -71,7 +71,7 @@ CURATED_MODELS: list[CuratedModel] = [
         filename="ggml-ivrit-large-v3-turbo.bin",
         url="https://huggingface.co/ivrit-ai/whisper-large-v3-turbo-ggml/resolve/main/ggml-model.bin",
         size_hint="1.6 GB",
-        description="Fine-tuned on Hebrew speech (ivrit.ai) — best for Hebrew-heavy dictation.",
+        description="Fine-tuned on Hebrew speech (ivrit.ai). Recommended as the main model for Hebrew dictation.",
     ),
     CuratedModel(
         name="Medium",
