@@ -121,9 +121,10 @@ class ModelsPage(QWidget):
         layout.addWidget(
             page_header(
                 content,
-                "Model Management",
+                "Models",
                 "Configure your local speech-recognition models for offline "
                 "transcription.",
+                icon="package",
             )
         )
         layout.addWidget(

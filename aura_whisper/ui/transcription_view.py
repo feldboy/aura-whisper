@@ -22,7 +22,7 @@ class TranscriptionView(QWidget):
 
         self._text = QTextEdit(self)
         self._text.setReadOnly(True)
-        self._text.setPlaceholderText("Hold your hotkey and speak…")
+        self._text.setPlaceholderText("Press your shortcut and start talking — clean text lands wherever you type.")
         self._text.setObjectName("transcription")
         self._text.setFrameShape(QTextEdit.NoFrame)
         enable_smooth_scroll(self._text)

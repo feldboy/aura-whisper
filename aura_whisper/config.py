@@ -63,9 +63,16 @@ class Config:
     vad_filter: bool = True
     initial_prompt: str = ""
     ai_hotkey: str = "<cmd>+<shift>+<alt>+<space>"
+    # Select text anywhere, press this, and the active AI mode rewrites it
+    # in place. Empty = disabled.
+    rewrite_selection_hotkey: str = "<ctrl>+r"
     active_mode: str = "Cleanup"
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "gemma4:12b"
+    # How long Ollama keeps the rewrite model in memory after a request.
+    # 0 = unload right after each rewrite (frees ~3 GB, next rewrite reloads
+    # it, ~5 s); >0 = stay loaded that many minutes for instant rewrites.
+    ollama_keep_alive_minutes: int = 0
     modes: list = field(default_factory=default_modes)
     hold_to_talk: bool = False
     keep_mic_warm: bool = False

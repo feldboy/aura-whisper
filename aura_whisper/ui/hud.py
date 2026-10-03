@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtGui import QColor, QCursor, QPainter, QPainterPath
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QWidget
 
@@ -14,7 +14,7 @@ class _RecDot(QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.setFixedSize(16, 16)
+        self.setFixedSize(12, 12)
         self._phase = 0.0
         self._active = False
         self._color = QColor(255, 69, 58)
@@ -46,16 +46,19 @@ class _RecDot(QWidget):
         glow = QColor(c.red(), c.green(), c.blue(), max(0, alpha - 170))
         painter.setPen(Qt.NoPen)
         painter.setBrush(glow)
-        painter.drawEllipse(1, 1, 14, 14)
+        painter.drawEllipse(1, 1, 10, 10)
         painter.setBrush(QColor(c.red(), c.green(), c.blue(), alpha))
-        painter.drawEllipse(4, 4, 8, 8)
+        painter.drawEllipse(3, 3, 6, 6)
 
 
 class RecordingHUD(QWidget):
-    """Dynamic-Island-style pill under the camera notch, top-center.
+    """Compact pill shown just above the mouse pointer when dictation starts
+    (top-center under the notch if the pointer's screen is unknown).
 
     Never takes focus, so the paste target keeps its cursor.
     """
+
+    _GAP = 10  # px between the pointer tip and the pill
 
     def __init__(self) -> None:
         super().__init__(
@@ -70,25 +73,26 @@ class RecordingHUD(QWidget):
         # Without this, macOS hides Qt.Tool windows whenever the app is
         # inactive — and a menu-bar background app is always inactive.
         self.setAttribute(Qt.WA_MacAlwaysShowToolWindow)
-        self.setFixedSize(320, 46)
+        self.setFixedSize(224, 30)
+        self._anchor: QPoint | None = None
 
         self._dot = _RecDot(self)
 
         self.waveform = Waveform(self)
-        self.waveform.setMinimumHeight(30)
-        self.waveform.setMaximumHeight(34)
-        self.waveform.setMinimumWidth(120)
+        self.waveform.setMinimumHeight(18)
+        self.waveform.setMaximumHeight(20)
+        self.waveform.setMinimumWidth(56)
 
         self._status = QLabel("", self)
         self._status.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
         self._status.setStyleSheet(
-            "color: rgba(255,255,255,215); font-size: 12px; font-weight: 600; "
+            "color: rgba(255,255,255,215); font-size: 11px; font-weight: 600; "
             "background: transparent;"
         )
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(16, 6, 18, 6)
-        layout.setSpacing(10)
+        layout.setContentsMargins(11, 4, 13, 4)
+        layout.setSpacing(7)
         layout.addWidget(self._dot)
         layout.addWidget(self.waveform, 1)
         layout.addWidget(self._status)
@@ -114,10 +118,11 @@ class RecordingHUD(QWidget):
         painter.drawPath(path)
 
     def set_status(self, text: str) -> None:
-        # Keep the pill compact: strip long mode/model suffixes for the island.
-        short = text
-        if len(short) > 34:
-            short = short[:33] + "…"
+        # Keep the pill compact: strip mode/model suffixes like
+        # "Listening… (Email mode)" or "Rewriting · Cleanup".
+        short = text.split(" (")[0].split(" · ")[0]
+        if len(short) > 20:
+            short = short[:19] + "…"
         self._status.setText(short)
 
     def set_recording(self, recording: bool) -> None:
@@ -128,7 +133,7 @@ class RecordingHUD(QWidget):
         """Show an animated 'still working…' state while the AI/model runs."""
         if busy:
             self.waveform.set_active(False)
-            self._dot.set_active(True, QColor(110, 125, 255))  # blue = working
+            self._dot.set_active(True, QColor(10, 132, 255))  # blue = working
             self._busy_base = text or self._status.text().rstrip(".…")
             self._busy_phase = 0
             self._busy_timer.start()
@@ -145,14 +150,40 @@ class RecordingHUD(QWidget):
         self._hide_timer.stop()
         if status:
             self.set_status(status)
-        screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
-        if screen is not None:
-            avail = screen.availableGeometry()
-            x = avail.x() + (avail.width() - self.width()) // 2
-            y = avail.y() + 6  # right under the menu bar / camera notch
-            self.move(x, y)
+        target = self._target_pos()
+        self.move(target)
         self.show()
+        if self.pos() != target:
+            # macOS can nudge a tool window on its first show; re-apply.
+            self.move(target)
         self.raise_()
+
+    def anchor_to_cursor(self) -> None:
+        """Show the pill next to where the mouse pointer is right now (the
+        user just clicked the field they're dictating into)."""
+        self._anchor = QCursor.pos()
+
+    def _target_pos(self) -> QPoint:
+        anchor = self._anchor
+        screen = QApplication.screenAt(anchor) if anchor is not None else None
+        if screen is None:
+            anchor = None
+            screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        if screen is None:
+            return self.pos()
+        avail = screen.availableGeometry()
+        if anchor is None:
+            # Right under the menu bar / camera notch.
+            return QPoint(avail.x() + (avail.width() - self.width()) // 2, avail.y() + 6)
+        # Centered just above the pointer, so it covers neither the pointer
+        # nor the line being clicked into.
+        x = anchor.x() - self.width() // 2
+        y = anchor.y() - self._GAP - self.height()
+        if y < avail.top() + 4:
+            y = anchor.y() + 24  # no room above: below the pointer arrow
+        x = max(avail.left() + 4, min(x, avail.right() - self.width() - 4))
+        y = max(avail.top() + 4, min(y, avail.bottom() - self.height() - 4))
+        return QPoint(x, y)
 
     def hide_soon(self, delay_ms: int = 1100) -> None:
         self._hide_timer.start(delay_ms)

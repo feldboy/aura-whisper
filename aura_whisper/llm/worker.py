@@ -33,7 +33,12 @@ class LLMWorker(QObject):
         self.started_processing.emit(model)
         try:
             client = OllamaClient(self._config.ollama_url)
-            result = client.rewrite(text, mode.get("prompt", ""), model)
+            result = client.rewrite(
+                text,
+                mode.get("prompt", ""),
+                model,
+                keep_alive_minutes=self._config.ollama_keep_alive_minutes,
+            )
             self.text_ready.emit(result)
         except OllamaError as e:
             self.error.emit(str(e))

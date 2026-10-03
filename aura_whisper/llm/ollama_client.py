@@ -86,16 +86,34 @@ class OllamaClient:
         prompt: str,
         model: str,
         context: str = "",
+        keep_alive_minutes: int = 0,
     ) -> str:
         system = prompt.strip() + SYSTEM_SUFFIX
         user = text.strip()
         if context.strip():
             user = f"Context:\n{context.strip()}\n\nDictated text:\n{user}"
-        data = self._request(
+        try:
+            data = self._chat(model, system, user, keep_alive_minutes)
+        except OllamaError as e:
+            if "not found" in str(e).lower():
+                raise OllamaError(
+                    f"Model '{model}' isn't installed in Ollama — pick another "
+                    f"model in Settings › AI Modes (or run `ollama pull {model}`)."
+                ) from e
+            raise
+        content = (data.get("message") or {}).get("content", "")
+        if not content.strip():
+            raise OllamaError("Ollama returned an empty response.")
+        return content.strip()
+
+    def _chat(self, model: str, system: str, user: str, keep_alive_minutes: int) -> dict:
+        return self._request(
             "/api/chat",
             {
                 "model": model,
                 "stream": False,
+                # 0 unloads the model as soon as the reply is sent.
+                "keep_alive": f"{max(0, int(keep_alive_minutes))}m",
                 "messages": [
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
@@ -103,10 +121,6 @@ class OllamaClient:
             },
             timeout=600.0,
         )
-        content = (data.get("message") or {}).get("content", "")
-        if not content.strip():
-            raise OllamaError("Ollama returned an empty response.")
-        return content.strip()
 
 
 class OllamaPuller(QObject):

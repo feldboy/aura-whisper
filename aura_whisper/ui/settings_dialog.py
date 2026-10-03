@@ -4,7 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QColor, QGuiApplication, QPalette
+from PySide6.QtGui import QColor, QGuiApplication, QIcon, QPalette
 from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
@@ -31,8 +31,10 @@ from aura_whisper.ui.ui_kit import (
     scroll_page as _scroll_page,
     section as _section,
     setting_row as _setting_row,
-    tinted_icon,
+    icon_tile,
+    tile_pixmap,
 )
+from aura_whisper.vibrancy import style_native_window
 
 
 LANGUAGES = [
@@ -103,6 +105,9 @@ class GeneralPage(QWidget):
         # --- Hotkeys ---
         self.hotkey = HotkeyEdit(config.hotkey, self)
         self.ai_hotkey = HotkeyEdit(config.ai_hotkey, self)
+        self.rewrite_selection_hotkey = HotkeyEdit(
+            config.rewrite_selection_hotkey, self
+        )
         self.hold_to_talk = ToggleSwitch(config.hold_to_talk, self)
 
         # --- Behavior ---
@@ -147,7 +152,10 @@ class GeneralPage(QWidget):
 
         layout.addWidget(
             _page_header(
-                body, "General", "Configure dictation and app behavior."
+                body,
+                "General",
+                "Configure dictation and app behavior.",
+                icon="settings",
             )
         )
 
@@ -188,6 +196,12 @@ class GeneralPage(QWidget):
                         "Dictate with AI",
                         "Rewrites your speech using the active AI mode.",
                         self.ai_hotkey,
+                    ),
+                    _setting_row(
+                        body,
+                        "Rewrite selection",
+                        "Select text in any app, press to rewrite it with the active AI mode.",
+                        self.rewrite_selection_hotkey,
                     ),
                     _setting_row(
                         body,
@@ -284,6 +298,7 @@ class AdvancedPage(QWidget):
                 "Advanced",
                 "Fine-tune performance for your hardware. The defaults work "
                 "well for most Macs.",
+                icon="tune",
             )
         )
 
@@ -346,6 +361,9 @@ class SettingsDialog(QDialog):
         # The UI is authored left-to-right; pin the direction so a Hebrew/RTL
         # system locale can't mirror the layout and clip content off-screen.
         self.setLayoutDirection(Qt.LeftToRight)
+        # Lay out edge-to-edge under the transparent title bar ourselves;
+        # otherwise Qt insets everything by the title bar's safe area.
+        self.setAttribute(Qt.WA_ContentsMarginsRespectsSafeArea, False)
         self._config = config
         self.result_config = replace(config)
 
@@ -354,9 +372,9 @@ class SettingsDialog(QDialog):
         # system is in light mode. Scoped to this dialog; propagates to children.
         palette = self.palette()
         for role in (QPalette.Window, QPalette.Base):
-            palette.setColor(role, QColor("#15161e"))
+            palette.setColor(role, QColor("#1E1E20"))
         for role in (QPalette.WindowText, QPalette.Text):
-            palette.setColor(role, QColor("#E8E9F3"))
+            palette.setColor(role, QColor("#F5F5F7"))
         self.setPalette(palette)
 
         self.setStyleSheet(load_styles())
@@ -375,37 +393,45 @@ class SettingsDialog(QDialog):
             self._advanced_page,
         ]
 
-        # --- left sidebar: branding + icon nav ---
-        sidebar = QWidget(self)
+        # --- left sidebar: floating panel with app identity + tiled nav ---
+        sidebar = QFrame(self)
         sidebar.setObjectName("settingsSidebar")
-        sidebar.setFixedWidth(216)
+        sidebar.setFixedWidth(224)
         side = QVBoxLayout(sidebar)
-        side.setContentsMargins(16, 22, 16, 16)
-        side.setSpacing(12)
+        # Top inset clears the native traffic-light buttons, which sit inside
+        # the sidebar once the title bar is made transparent.
+        side.setContentsMargins(10, 44, 10, 12)
+        side.setSpacing(2)
 
-        brand = QVBoxLayout()
-        brand.setContentsMargins(8, 0, 8, 0)
-        brand.setSpacing(1)
-        kicker = QLabel("AURAWHISPER", sidebar)
-        kicker.setObjectName("brandKicker")
-        brand_title = QLabel("Settings", sidebar)
+        identity = QWidget(sidebar)
+        identity.setObjectName("appIdentity")
+        id_row = QHBoxLayout(identity)
+        id_row.setContentsMargins(8, 8, 8, 8)
+        id_row.setSpacing(10)
+        id_row.addWidget(icon_tile("mic", 34, identity, circle=True))
+        id_text = QVBoxLayout()
+        id_text.setContentsMargins(0, 0, 0, 0)
+        id_text.setSpacing(0)
+        brand_title = QLabel("AuraWhisper", identity)
         brand_title.setObjectName("brandTitle")
-        brand.addWidget(kicker)
-        brand.addWidget(brand_title)
-        side.addLayout(brand)
-        side.addSpacing(20)
+        kicker = QLabel("Private · On-device", identity)
+        kicker.setObjectName("brandKicker")
+        id_text.addWidget(brand_title)
+        id_text.addWidget(kicker)
+        id_row.addLayout(id_text, 1)
+        side.addWidget(identity)
+        side.addSpacing(10)
 
         self._nav_group = QButtonGroup(self)
         self._nav_group.setExclusive(True)
         self._nav_buttons: list[QPushButton] = []
         for i, (icon_name, title, subtitle) in enumerate(self._NAV):
-            btn = QPushButton(f"   {title}", sidebar)
+            btn = QPushButton(f"  {title}", sidebar)
             btn.setProperty("navItem", True)
             btn.setCheckable(True)
             btn.setToolTip(subtitle)
-            btn.setCursor(Qt.PointingHandCursor)
-            btn.setIconSize(QSize(18, 18))
-            btn.setIcon(tinted_icon(icon_name, "#B9BCD4", 18))
+            btn.setIconSize(QSize(22, 22))
+            btn.setIcon(QIcon(tile_pixmap(icon_name, 22)))
             btn.clicked.connect(lambda _=False, idx=i: self._select_page(idx))
             self._nav_group.addButton(btn, i)
             self._nav_buttons.append(btn)
@@ -416,49 +442,55 @@ class SettingsDialog(QDialog):
         for page in pages:
             self._stack.addWidget(page)
 
-        content_row = QHBoxLayout()
-        content_row.setContentsMargins(0, 0, 0, 0)
-        content_row.setSpacing(0)
-        content_row.addWidget(sidebar)
-        content_row.addWidget(self._stack, 1)
-
-        # --- bottom action bar ---
+        # --- bottom action bar (detail pane only, like System Settings) ---
         footer = QFrame(self)
         footer.setObjectName("settingsFooter")
-        footer.setFixedHeight(60)
+        footer.setFixedHeight(56)
         footer_row = QHBoxLayout(footer)
         footer_row.setContentsMargins(20, 0, 20, 0)
         footer_row.setSpacing(10)
         footer_row.addStretch(1)
         cancel_btn = QPushButton("Cancel", footer)
         cancel_btn.setObjectName("cancelBtn")
-        cancel_btn.setCursor(Qt.PointingHandCursor)
         cancel_btn.clicked.connect(self.reject)
         save_btn = QPushButton("Save", footer)
         save_btn.setObjectName("saveBtn")
         save_btn.setDefault(True)
-        save_btn.setCursor(Qt.PointingHandCursor)
         save_btn.clicked.connect(self._accept)
         footer_row.addWidget(cancel_btn)
         footer_row.addWidget(save_btn)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        detail = QVBoxLayout()
+        detail.setContentsMargins(0, 12, 0, 0)
+        detail.setSpacing(0)
+        detail.addWidget(self._stack, 1)
+        detail.addWidget(footer)
+
+        layout = QHBoxLayout(self)
+        # The sidebar floats: inset from the window edges like macOS Tahoe.
+        layout.setContentsMargins(8, 8, 0, 8)
         layout.setSpacing(0)
-        layout.addLayout(content_row, 1)
-        layout.addWidget(footer)
+        layout.addWidget(sidebar, 0)
+        layout.addSpacing(4)
+        layout.addLayout(detail, 1)
+        self._sidebar = sidebar
+        self._native_styled = False
 
         self._select_page(0)
         self._fit_to_screen()
 
     def _select_page(self, index: int) -> None:
-        """Switch pages and re-tint the sidebar icons for the active row."""
         self._stack.setCurrentIndex(index)
-        for i, (icon_name, _title, _subtitle) in enumerate(self._NAV):
-            active = i == index
-            self._nav_buttons[i].setChecked(active)
-            color = "#C7CBFF" if active else "#B9BCD4"
-            self._nav_buttons[i].setIcon(tinted_icon(icon_name, color, 18))
+        self._nav_buttons[index].setChecked(True)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if not self._native_styled:
+            self._native_styled = True
+            # Transparent title bar; the sidebar runs up under the traffic
+            # lights. If this fails the top inset is simply empty space.
+            if not style_native_window(self):
+                self._sidebar.layout().setContentsMargins(10, 14, 10, 12)
 
     def _fit_to_screen(self) -> None:
         """Size the window to comfortably fit the current screen, positioned
@@ -490,6 +522,7 @@ class SettingsDialog(QDialog):
             language=g.language.currentData() or "auto",
             hotkey=g.hotkey.combo() or "<cmd>+<shift>+<space>",
             ai_hotkey=g.ai_hotkey.combo() or "<cmd>+<shift>+<alt>+<space>",
+            rewrite_selection_hotkey=g.rewrite_selection_hotkey.combo(),
             device=a.device.currentText(),
             compute_type=a.compute.currentText(),
             auto_paste=g.auto_paste.isChecked(),

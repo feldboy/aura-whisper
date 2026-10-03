@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
 import time
 from typing import Optional
 
@@ -10,11 +12,91 @@ SAMPLE_RATE = 16_000
 BLOCK_SIZE = 1024
 CHANNELS = 1
 
-# How often to check whether the OS default input device changed while idle.
-DEVICE_POLL_MS = 3_000
-# Skip a poll tick within this long after a start()/stop() transition, so we
+# How often to check (via CoreAudio, ~50 µs) whether audio hardware changed.
+DEVICE_POLL_MS = 1_000
+# Skip a resync within this long after a start()/stop() transition, so we
 # never race sd._terminate() against an in-flight cue sound or a recording.
 TRANSITION_COOLDOWN_S = 1.2
+
+
+class _AudioPropertyAddress(ctypes.Structure):
+    _fields_ = [
+        ("mSelector", ctypes.c_uint32),
+        ("mScope", ctypes.c_uint32),
+        ("mElement", ctypes.c_uint32),
+    ]
+
+
+def _fourcc(code: str) -> int:
+    return int.from_bytes(code.encode("ascii"), "big")
+
+
+_coreaudio = None
+
+
+def _audio_route() -> Optional[tuple[int, int, int]]:
+    """(default input id, default output id, device-list size) from CoreAudio.
+
+    Unlike PortAudio's device table this is always live, so it tells us
+    cheaply when headphones/mics were connected or the default device
+    switched. Returns None if CoreAudio can't be queried (non-macOS, etc.).
+    """
+    global _coreaudio
+    try:
+        if _coreaudio is None:
+            lib = ctypes.CDLL(ctypes.util.find_library("CoreAudio"))
+            lib.AudioObjectGetPropertyData.argtypes = [
+                ctypes.c_uint32,
+                ctypes.POINTER(_AudioPropertyAddress),
+                ctypes.c_uint32,
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_uint32),
+                ctypes.c_void_p,
+            ]
+            lib.AudioObjectGetPropertyData.restype = ctypes.c_int32
+            lib.AudioObjectGetPropertyDataSize.argtypes = [
+                ctypes.c_uint32,
+                ctypes.POINTER(_AudioPropertyAddress),
+                ctypes.c_uint32,
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_uint32),
+            ]
+            lib.AudioObjectGetPropertyDataSize.restype = ctypes.c_int32
+            _coreaudio = lib
+        system_object = 1  # kAudioObjectSystemObject
+        glob = _fourcc("glob")  # kAudioObjectPropertyScopeGlobal
+
+        def default_device(selector: str) -> int:
+            addr = _AudioPropertyAddress(_fourcc(selector), glob, 0)
+            value = ctypes.c_uint32(0)
+            size = ctypes.c_uint32(4)
+            err = _coreaudio.AudioObjectGetPropertyData(
+                system_object, ctypes.byref(addr), 0, None,
+                ctypes.byref(size), ctypes.byref(value),
+            )
+            if err:
+                raise OSError(err)
+            return value.value
+
+        addr = _AudioPropertyAddress(_fourcc("dev#"), glob, 0)
+        list_size = ctypes.c_uint32(0)
+        err = _coreaudio.AudioObjectGetPropertyDataSize(
+            system_object, ctypes.byref(addr), 0, None, ctypes.byref(list_size)
+        )
+        if err:
+            raise OSError(err)
+        return default_device("dIn "), default_device("dOut"), list_size.value
+    except Exception:
+        return None
+
+
+def _cue_playing(sd) -> bool:
+    """True while sounddevice's play() stream (our cue sounds) is running."""
+    try:
+        cb = sd._last_callback
+        return bool(cb and cb.stream.active)
+    except Exception:
+        return False
 
 
 class Recorder(QObject):
@@ -30,8 +112,10 @@ class Recorder(QObject):
         self._chunks: list[np.ndarray] = []
         self._recording = False
         self._warm = False
-        self._current_device_name: Optional[str] = None
         self._last_transition_ts = 0.0
+        # The route PortAudio's device table currently reflects (it was built
+        # when sounddevice was imported, i.e. just before this).
+        self._route = _audio_route()
         self._device_poll_timer = QTimer(self)
         self._device_poll_timer.setInterval(DEVICE_POLL_MS)
         self._device_poll_timer.timeout.connect(self._poll_device_change)
@@ -39,6 +123,43 @@ class Recorder(QObject):
 
     def is_recording(self) -> bool:
         return self._recording
+
+    def refresh_devices(self, force: bool = False) -> None:
+        """Rebuild PortAudio's device table if the audio hardware changed.
+
+        PortAudio snapshots the device list (and which input/output is the
+        default) when it initializes and never rescans it while the process
+        runs, so headphones connected after launch stay invisible — the app
+        keeps recording from (and playing cues to) the old device until it is
+        restarted. Called before every recording (before the start cue, since
+        a rebuild stops any sound that is playing); it's a no-op unless
+        CoreAudio reports a change or ``force`` is set. Skipped while
+        recording or while a warm stream is open, because a rebuild tears
+        down every PortAudio stream.
+        """
+        if self._recording or self._stream is not None:
+            return
+        route = _audio_route()
+        if not force and route is not None and route == self._route:
+            return
+        try:
+            import sounddevice as sd
+        except Exception:
+            return
+        try:
+            sd.stop()  # close the last cue stream before PortAudio goes away
+        except Exception:
+            pass
+        try:
+            if sd._initialized:
+                sd._terminate()
+        except Exception:
+            pass
+        try:
+            sd._initialize()
+        except Exception:
+            return
+        self._route = route
 
     def _callback(self, indata, frames, time_info, status):
         if not self._recording:
@@ -77,18 +198,14 @@ class Recorder(QObject):
             # connected after the app was already open) can be invisible
             # or stale until the table is rebuilt. Force a rescan by
             # tearing down and reinitializing PortAudio, then retry once.
+            self._close_stream()
+            self.refresh_devices(force=True)
             try:
-                sd._terminate()
-                sd._initialize()
                 _try_open()
             except Exception as e:
                 self._stream = None
                 self.error.emit(f"Failed to open microphone: {e}")
                 return False
-        try:
-            self._current_device_name = sd.query_devices(kind="input")["name"]
-        except Exception:
-            self._current_device_name = None
         return True
 
     def _close_stream(self) -> None:
@@ -136,16 +253,18 @@ class Recorder(QObject):
         return buffer
 
     def _poll_device_change(self) -> None:
-        """Idle-time watchdog: keep the default input device in sync.
+        """Idle-time watchdog: follow hot-plugged / newly-default devices.
 
-        PortAudio never re-syncs its notion of "the default device" on its
-        own (see the comment in _open_stream), so switching between two
-        already-connected devices in macOS Sound settings would otherwise
-        go unnoticed until the app is restarted. Runs only while idle and
-        well clear of a start()/stop() transition, so it never races the
-        cue sound (a separate PortAudio output stream) or a live recording.
+        Rescans as soon as CoreAudio reports a change, so the next recording
+        starts instantly on the right mic. A warm (kept-open) stream is
+        reopened on the new default device. Waits while recording, right
+        after a start()/stop(), or while a cue is playing — the change stays
+        pending and is retried on the next tick (and start() catches it too).
         """
         if self._recording:
+            return
+        route = _audio_route()
+        if route is None or route == self._route:
             return
         if time.monotonic() - self._last_transition_ts < TRANSITION_COOLDOWN_S:
             return
@@ -153,19 +272,13 @@ class Recorder(QObject):
             import sounddevice as sd
         except Exception:
             return
-        try:
-            sd._terminate()
-            sd._initialize()
-            current_name = sd.query_devices(kind="input")["name"]
-        except Exception:
+        if _cue_playing(sd):
             return
-        if current_name == self._current_device_name:
-            return
-        if self._warm and self._stream is not None:
-            self._close_stream()
+        was_warm = self._stream is not None
+        self._close_stream()
+        self.refresh_devices()
+        if was_warm and self._warm:
             self._open_stream()
-        else:
-            self._current_device_name = current_name
 
     def shutdown(self) -> None:
         self._recording = False
