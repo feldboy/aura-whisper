@@ -11,7 +11,7 @@ from PySide6.QtCore import (
     QSize,
     Qt,
 )
-from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPen, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QAbstractButton,
@@ -31,13 +31,32 @@ _RESOURCES_DIR = Path(__file__).parent.parent / "resources"
 _STYLES_PATH = _RESOURCES_DIR / "styles.qss"
 _ICONS_DIR = _RESOURCES_DIR / "icons"
 
-# Aura palette tokens (mirrors DESIGN.md / styles.qss) used by painted widgets
-# that can't read their colours from the stylesheet.
-PRIMARY = "#bdc2ff"
-PRIMARY_CONTAINER = "#7886ff"
-ON_SURFACE = "#e2e1ee"
-ON_SURFACE_VARIANT = "#c6c5d6"
-MUTED = "#8f8fa0"
+# macOS dark-appearance palette (mirrors styles.qss) for painted widgets that
+# can't read their colours from the stylesheet.
+ACCENT = "#0A84FF"  # systemBlue
+ACCENT_PRESSED = "#0070E0"
+GREEN = "#30D158"
+RED = "#FF453A"
+WINDOW_BG = "#1E1E20"
+LABEL = "#F5F5F7"
+SECONDARY_LABEL = "#A1A1A6"
+TERTIARY_LABEL = "#6E6E73"
+
+# Legacy names kept so older call sites keep resolving.
+PRIMARY = ACCENT
+PRIMARY_CONTAINER = ACCENT
+ON_SURFACE = LABEL
+ON_SURFACE_VARIANT = SECONDARY_LABEL
+MUTED = SECONDARY_LABEL
+
+# System-Settings-style icon tiles: (top, bottom) gradient per glyph.
+TILE_GRADIENTS: dict[str, tuple[str, str]] = {
+    "settings": ("#9A9AA0", "#636368"),
+    "sparkles": ("#C86BFA", "#7B3FE4"),
+    "package": ("#3A9BFF", "#0064E0"),
+    "tune": ("#7472F0", "#4543C9"),
+    "mic": ("#3A9BFF", "#8E4BF0"),
+}
 
 
 def load_styles() -> str:
@@ -77,6 +96,53 @@ def tinted_icon(name: str, color: str, size: int = 18) -> QIcon:
     return QIcon(pm)
 
 
+@lru_cache(maxsize=64)
+def tile_pixmap(name: str, size: int = 22, circle: bool = False) -> QPixmap:
+    """A white glyph on a gradient rounded square — the System Settings icon
+    idiom. ``circle`` renders a round badge instead (used for the app ID)."""
+    scale = 2
+    px = size * scale
+    pm = QPixmap(px, px)
+    pm.fill(Qt.transparent)
+    top, bottom = TILE_GRADIENTS.get(name, ("#8E8E93", "#636366"))
+    painter = QPainter(pm)
+    painter.setRenderHint(QPainter.Antialiasing)
+    grad = QLinearGradient(0, 0, 0, px)
+    grad.setColorAt(0.0, QColor(top))
+    grad.setColorAt(1.0, QColor(bottom))
+    rect = QRectF(0, 0, px, px)
+    radius = px / 2 if circle else px * 0.25
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(grad)
+    painter.drawRoundedRect(rect, radius, radius)
+    # Faint top sheen, like the glossy edge on Apple's tiles.
+    painter.setBrush(Qt.NoBrush)
+    painter.setPen(QPen(QColor(255, 255, 255, 46), scale * 0.5))
+    painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), radius, radius)
+    glyph = round(px * 0.62)
+    off = round((px - glyph) / 2)
+    mark = QPixmap(glyph, glyph)
+    mark.fill(Qt.transparent)
+    gp = QPainter(mark)
+    QSvgRenderer((_ICONS_DIR / f"{name}.svg").as_posix()).render(gp)
+    gp.setCompositionMode(QPainter.CompositionMode_SourceIn)
+    gp.fillRect(mark.rect(), QColor("#FFFFFF"))
+    gp.end()
+    painter.drawPixmap(off, off, mark)
+    painter.end()
+    pm.setDevicePixelRatio(scale)
+    return pm
+
+
+def icon_tile(
+    name: str, size: int = 22, parent: QWidget | None = None, circle: bool = False
+) -> QLabel:
+    lbl = QLabel(parent)
+    lbl.setPixmap(tile_pixmap(name, size, circle))
+    lbl.setFixedSize(size, size)
+    return lbl
+
+
 def icon_label(
     name: str,
     color: str = ON_SURFACE_VARIANT,
@@ -103,9 +169,9 @@ class ToggleSwitch(QAbstractButton):
         self, checked: bool = False, parent: QWidget | None = None
     ) -> None:
         super().__init__(parent)
-        self._track_w = 42
-        self._track_h = 24
-        self._margin = 3
+        self._track_w = 38
+        self._track_h = 22
+        self._margin = 2
         self.setCheckable(True)
         self.setCursor(Qt.PointingHandCursor)
         self.setFocusPolicy(Qt.NoFocus)
@@ -113,8 +179,8 @@ class ToggleSwitch(QAbstractButton):
         self._offset = 1.0 if checked else 0.0
         self.setChecked(checked)
         self._anim = QPropertyAnimation(self, b"offset", self)
-        self._anim.setDuration(150)
-        self._anim.setEasingCurve(QEasingCurve.InOutCubic)
+        self._anim.setDuration(220)
+        self._anim.setEasingCurve(QEasingCurve.OutBack)
         self.toggled.connect(self._animate)
 
     def _get_offset(self) -> float:
@@ -139,16 +205,19 @@ class ToggleSwitch(QAbstractButton):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         radius = self._track_h / 2
-        t = self._offset
+        # OutBack overshoots past 1.0; clamp for colour, keep for the knob.
+        t = min(max(self._offset, 0.0), 1.0)
 
-        off = QColor(255, 255, 255, 38)
-        on = QColor(PRIMARY_CONTAINER)
+        off = QColor(255, 255, 255, 40)
+        on = QColor(ACCENT)
         track = QColor(
             round(off.red() + (on.red() - off.red()) * t),
             round(off.green() + (on.green() - off.green()) * t),
             round(off.blue() + (on.blue() - off.blue()) * t),
             round(off.alpha() + (255 - off.alpha()) * t),
         )
+        if not self.isEnabled():
+            track.setAlpha(track.alpha() // 2)
         painter.setPen(Qt.NoPen)
         painter.setBrush(track)
         painter.drawRoundedRect(
@@ -157,7 +226,10 @@ class ToggleSwitch(QAbstractButton):
 
         knob_d = self._track_h - self._margin * 2
         travel = self._track_w - knob_d - self._margin * 2
-        x = self._margin + t * travel
+        x = self._margin + self._offset * travel
+        # Soft drop shadow under the knob.
+        painter.setBrush(QColor(0, 0, 0, 60))
+        painter.drawEllipse(QRectF(x, self._margin + 0.8, knob_d, knob_d))
         painter.setBrush(QColor("#ffffff"))
         painter.drawEllipse(QRectF(x, self._margin, knob_d, knob_d))
         painter.end()
@@ -171,12 +243,20 @@ def hint(text: str, parent: QWidget) -> QLabel:
     return label
 
 
-def page_header(parent: QWidget, title: str, subtitle: str) -> QWidget:
-    """A large title + one-line description shown at the top of each page."""
+def page_header(
+    parent: QWidget, title: str, subtitle: str, icon: str | None = None
+) -> QWidget:
+    """Page hero: an optional large icon tile beside a title + description,
+    like the header of a System Settings pane."""
     holder = QWidget(parent)
-    v = QVBoxLayout(holder)
-    v.setContentsMargins(0, 0, 0, 2)
-    v.setSpacing(4)
+    h = QHBoxLayout(holder)
+    h.setContentsMargins(0, 0, 0, 4)
+    h.setSpacing(14)
+    if icon is not None:
+        h.addWidget(icon_tile(icon, 44, holder), 0, Qt.AlignTop)
+    v = QVBoxLayout()
+    v.setContentsMargins(0, 0, 0, 0)
+    v.setSpacing(3)
     t = QLabel(title, holder)
     t.setProperty("pageTitle", True)
     v.addWidget(t)
@@ -185,6 +265,7 @@ def page_header(parent: QWidget, title: str, subtitle: str) -> QWidget:
         s.setProperty("pageSubtitle", True)
         s.setWordWrap(True)
         v.addWidget(s)
+    h.addLayout(v, 1)
     return holder
 
 
@@ -194,8 +275,8 @@ def page_header(parent: QWidget, title: str, subtitle: str) -> QWidget:
 
 
 def section_caption(parent: QWidget, text: str) -> QLabel:
-    """The small uppercase caption that sits above an inset-grouped card."""
-    lbl = QLabel(text.upper(), parent)
+    """The bold group header that sits above an inset-grouped card."""
+    lbl = QLabel(text, parent)
     lbl.setProperty("sectionCaption", True)
     return lbl
 
@@ -273,8 +354,9 @@ def setting_row(
     row = QWidget(parent)
     row.setProperty("settingRow", True)
     h = QHBoxLayout(row)
-    h.setContentsMargins(16, 12, 16, 12)
+    h.setContentsMargins(14, 10, 14, 10)
     h.setSpacing(12)
+    row.setMinimumHeight(44)
 
     if icon is not None:
         h.addWidget(icon_label(icon, MUTED, 18, row), 0, Qt.AlignVCenter)

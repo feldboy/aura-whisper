@@ -198,6 +198,7 @@ class AIModesPage(QWidget):
                 "AI Modes",
                 "Rewrite what you dictate with a local AI model. The mode marked "
                 "★ runs when you use the \"Dictate with AI\" shortcut.",
+                icon="sparkles",
             )
         )
         v.addWidget(

@@ -36,6 +36,8 @@ class py2app_and_codesign(py2app_command):
 APP = ["main.py"]
 OPTIONS = {
     "argv_emulation": False,
+    # Regenerate with: python scripts/make_icon.py
+    "iconfile": "aura_whisper/resources/AppIcon.icns",
     # _sounddevice_data ships libportaudio.dylib as package data, so it
     # needs a full directory copy (packages), not just the includes graph.
     # ctranslate2/onnxruntime ship compiled per-platform shared libraries

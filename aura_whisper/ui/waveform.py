@@ -84,15 +84,13 @@ class Waveform(QWidget):
         bar_w = max(2.0, (w - gap * (n + 1)) / n)
         max_h = h * 0.9
 
-        grad = QLinearGradient(0, 0, 0, h)
-        grad.setColorAt(0.0, QColor(130, 170, 255))
-        grad.setColorAt(0.5, QColor(110, 120, 255))
-        grad.setColorAt(1.0, QColor(180, 100, 230))
-
-        glow_grad = QLinearGradient(0, 0, 0, h)
-        glow_grad.setColorAt(0.0, QColor(130, 170, 255, 60))
-        glow_grad.setColorAt(0.5, QColor(120, 130, 255, 60))
-        glow_grad.setColorAt(1.0, QColor(180, 100, 230, 60))
+        # Siri-like sweep: systemBlue -> violet -> pink across the width.
+        stops = ((0.0, (64, 160, 255)), (0.5, (142, 108, 255)), (1.0, (230, 98, 200)))
+        grad = QLinearGradient(0, 0, w, 0)
+        glow_grad = QLinearGradient(0, 0, w, 0)
+        for pos, (r, g, b) in stops:
+            grad.setColorAt(pos, QColor(r, g, b))
+            glow_grad.setColorAt(pos, QColor(r, g, b, 55))
 
         painter.setPen(Qt.NoPen)
 

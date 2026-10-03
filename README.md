@@ -1,10 +1,19 @@
 # AuraWhisper
 
-A local-first Whisper dictation app for macOS, modeled after MacWhisper /
-Superwhisper / Wispr Flow. 100% offline inference via whisper.cpp using
-Whisper models on disk (Hebrew + English work great with large-v3-turbo).
-PySide6 UI with a Siri-style animated waveform, push-to-talk global hotkey,
-and paste-into-active-app.
+**Your voice, typed — entirely on your Mac.**
+
+Press one key, start talking, and clean text lands in whatever app you're
+using. No account, no cloud, no word limits.
+
+- **Works everywhere** — one global hotkey types into any app: Mail, Slack,
+  your editor, the terminal.
+- **Private by construction** — speech is transcribed on-device with
+  whisper.cpp and rewritten by a local LLM via Ollama. Nothing leaves your Mac.
+- **Speaks your language** — Hebrew, English, and mixed speech out of the box
+  (ivrit.ai-tuned model available), plus 12 more languages.
+
+Under the hood: PySide6 UI, Whisper models on disk (large-v3-turbo
+recommended), push-to-talk or toggle hotkeys, and paste-into-active-app.
 
 New in v2:
 
