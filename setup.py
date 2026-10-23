@@ -25,6 +25,15 @@ CODESIGN_IDENTITY = "AuraWhisper Local Dev"
 
 
 class py2app_and_codesign(py2app_command):
+    def finalize_options(self):
+        # Newer setuptools turns pyproject.toml's [project].dependencies into
+        # install_requires, which py2app rejects outright. The bundle copies
+        # packages from the venv, so it doesn't need them.
+        self.distribution.install_requires = []
+        # pyproject's "aura-whisper" would otherwise name the bundle.
+        self.distribution.metadata.name = "AuraWhisper"
+        super().finalize_options()
+
     def run(self):
         super().run()
         app_path = f"dist/{self.distribution.get_name()}.app"
