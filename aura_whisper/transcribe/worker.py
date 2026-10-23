@@ -8,6 +8,7 @@ from PySide6.QtCore import QObject, QTimer, Signal, Slot
 from aura_whisper.config import Config
 from aura_whisper.models.manager import model_kind
 from aura_whisper.transcribe.engine import FasterWhisperEngine, WhisperEngine
+from aura_whisper.transcribe.fillers import strip_fillers
 
 SAMPLE_RATE = 16_000
 # Streaming: while the user is still talking, every finished phrase (audio up
@@ -448,7 +449,7 @@ class TranscribeWorker(QObject):
                 text = self._transcribe_segment(
                     buffer, self._config.initial_prompt, language
                 )
-            self.text_ready.emit(text)
+            self.text_ready.emit(strip_fillers(text))
         except Exception as e:
             self.error.emit(f"Transcription failed: {e}")
         finally:

@@ -112,6 +112,7 @@ class GeneralPage(QWidget):
 
         # --- Behavior ---
         self.auto_paste = ToggleSwitch(config.auto_paste, self)
+        self.polish = ToggleSwitch(config.polish_dictation, self)
         self.keep_mic_warm = ToggleSwitch(config.keep_mic_warm, self)
         self.pause_media = ToggleSwitch(
             config.pause_media_while_recording, self
@@ -248,6 +249,13 @@ class GeneralPage(QWidget):
                         "Type the result where my cursor is",
                         "Drops the finished text into the app you were using.",
                         self.auto_paste,
+                    ),
+                    _setting_row(
+                        body,
+                        "Polish every dictation with AI",
+                        "Removes hesitations and puts the sentence in logical "
+                        "order (Ollama; adds a few seconds).",
+                        self.polish,
                     ),
                 ],
             )
@@ -526,6 +534,7 @@ class SettingsDialog(QDialog):
             device=a.device.currentText(),
             compute_type=a.compute.currentText(),
             auto_paste=g.auto_paste.isChecked(),
+            polish_dictation=g.polish.isChecked(),
             vad_filter=g.vad.isChecked(),
             hold_to_talk=g.hold_to_talk.isChecked(),
             keep_mic_warm=g.keep_mic_warm.isChecked(),

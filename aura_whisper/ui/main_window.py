@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 
 from aura_whisper.audio.recorder import Recorder
 from aura_whisper.audio import cues
-from aura_whisper.config import Config
+from aura_whisper.config import POLISH_MIN_WORDS, POLISH_MODE, Config
 from aura_whisper.hotkey.global_hotkey import GlobalHotkey
 from aura_whisper.llm.worker import LLMWorker
 from aura_whisper.media import MediaController
@@ -174,6 +174,8 @@ class MainWindow(QMainWindow):
         self._hud = RecordingHUD()
 
         self._pending_mode: dict | None = None
+        # Raw transcript while the automatic polish pass runs (fallback on error).
+        self._polish_raw: str | None = None
         self._generation = 0
         self._pending_gen = -1
         self._cancel_recording_pending = False
@@ -562,14 +564,20 @@ class MainWindow(QMainWindow):
             return
         mode = self._pending_mode
         self._pending_mode = None
+        self._polish_raw = None
         if mode is not None:
             self._llm.rewrite_requested.emit(text, mode)
+            return
+        if self._config.polish_dictation and len(text.split()) >= POLISH_MIN_WORDS:
+            self._polish_raw = text
+            self._llm.rewrite_requested.emit(text, POLISH_MODE)
             return
         self._deliver(text)
 
     def _on_ai_text_ready(self, text: str) -> None:
         if self._pending_gen != self._generation:
             return
+        self._polish_raw = None
         self._deliver(text)
 
     def _on_transcribe_error(self, message: str) -> None:
@@ -579,6 +587,12 @@ class MainWindow(QMainWindow):
 
     def _on_rewrite_error(self, message: str) -> None:
         if self._pending_gen != self._generation:
+            return
+        if self._polish_raw is not None:
+            # The polish pass is a nicety: never lose the dictation over it.
+            raw, self._polish_raw = self._polish_raw, None
+            _log(f"polish failed, pasting raw text: {message}")
+            self._deliver(raw)
             return
         self._on_error(message)
 
