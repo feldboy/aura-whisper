@@ -95,8 +95,10 @@ class Config:
     ollama_keep_alive_minutes: int = 0
     modes: list = field(default_factory=default_modes)
     # Run plain dictation through POLISH_MODE (Ollama) so it comes out fluent
-    # and logically ordered. Falls back to the raw text if Ollama fails.
-    polish_dictation: bool = True
+    # and logically ordered. Falls back to the raw text if Ollama fails. Off by
+    # default: it adds seconds per dictation (more with keep-alive 0), and the
+    # instant rule-based cleanup in transcribe/fillers.py always runs anyway.
+    polish_dictation: bool = False
     hold_to_talk: bool = False
     keep_mic_warm: bool = False
     pause_media_while_recording: bool = True

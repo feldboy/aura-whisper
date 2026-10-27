@@ -253,8 +253,9 @@ class GeneralPage(QWidget):
                     _setting_row(
                         body,
                         "Polish every dictation with AI",
-                        "Removes hesitations and puts the sentence in logical "
-                        "order (Ollama; adds a few seconds).",
+                        "Also puts the sentence in logical order (Ollama; adds "
+                        "a few seconds). Fillers and repeats are removed "
+                        "instantly either way.",
                         self.polish,
                     ),
                 ],
