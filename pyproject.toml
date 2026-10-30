@@ -34,4 +34,4 @@ aura-whisper = "aura_whisper.__main__:main"
 include = ["aura_whisper*"]
 
 [tool.setuptools.package-data]
-aura_whisper = ["resources/*.qss"]
+aura_whisper = ["resources/*.qss", "resources/cmudict/*"]

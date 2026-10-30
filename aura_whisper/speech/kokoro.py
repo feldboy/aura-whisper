@@ -23,14 +23,20 @@ import numpy as np
 from PySide6.QtCore import QObject, QThread, Signal
 
 from aura_whisper.config import MODELS_DIR
+from aura_whisper.speech.english import LATIN_WORD, mixed_phonemes
 from aura_whisper.speech.speaker import clamp_speed
 
 KOKORO_DIR = MODELS_DIR / "tts" / "kokoro-hebrew"
 SAMPLE_RATE = 24000
 VOICE = "he_shaul"
-# Kokoro's own speed input stops shortening speech much past 2x; faster
-# speeds are synthesized at 2x and then time-compressed (pitch unchanged).
-MODEL_MAX_SPEED = 2.0
+# Kokoro's own speed input slurs and drops sounds when sped up (Whisper
+# misheard 3/25 words at 1.7x), so faster speeds are synthesized at the
+# natural pace and time-compressed instead (pitch unchanged; 0/25 at 2.5x).
+MODEL_MAX_SPEED = 1.0
+# Audio buffer size. PortAudio's default here is ~15 frames (0.6 ms), which
+# starves whenever Python holds the GIL (Qt, Phonikud) -> crackling and
+# stutter. ~85 ms buffers play smoothly even under load.
+BLOCK_FRAMES = 2048
 MAX_TOKENS = 510
 SENTENCE_PAUSE_S = 0.15
 # Long sentences are split further so the first audio arrives quickly.
@@ -174,10 +180,20 @@ class _Engine:
         self.vocab: dict[str, int] = config["vocab"]
         self.style = np.load(model_dir / "voices-hebrew.bin")[VOICE]
 
-    def synthesize(self, text: str, speed: float) -> np.ndarray:
+    def _hebrew_phonemes(self, text: str) -> str:
         from phonikud import phonemize
 
-        phonemes = phonemize(self.phonikud.add_diacritics(text))
+        # "ה-GitHub": the prefix hyphen would otherwise glue onto the word.
+        text = text.replace("-", " ")
+        if not re.search(r"[\u0590-\u05FF0-9]", text):
+            return ""  # punctuation/spaces between English words
+        return phonemize(self.phonikud.add_diacritics(text))
+
+    def synthesize(self, text: str, speed: float) -> np.ndarray:
+        if LATIN_WORD.search(text):
+            phonemes = mixed_phonemes(text, self._hebrew_phonemes)
+        else:
+            phonemes = self._hebrew_phonemes(text)
         tokens = [self.vocab[c] for c in phonemes if c in self.vocab][:MAX_TOKENS]
         if not tokens:
             return np.zeros(0, dtype=np.float32)
@@ -274,6 +290,8 @@ class KokoroSpeaker:
                 samplerate=SAMPLE_RATE,
                 channels=1,
                 dtype="float32",
+                blocksize=BLOCK_FRAMES,
+                latency="high",
                 callback=self._fill,
             )
             self._stream.start()

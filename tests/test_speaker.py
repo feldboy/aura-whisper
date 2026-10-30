@@ -61,3 +61,45 @@ def test_time_stretch_shortens_without_changing_pitch():
     spectrum = np.abs(np.fft.rfft(out))
     peak_hz = np.argmax(spectrum) * SAMPLE_RATE / len(out)
     assert abs(peak_hz - 200) < 5
+
+
+def test_fast_speech_uses_natural_model_pace_then_time_stretch():
+    import numpy as np
+
+    from aura_whisper.speech import kokoro
+
+    class FakeSession:
+        speeds = []
+
+        def run(self, _outputs, inputs):
+            self.speeds.append(float(inputs["speed"][0]))
+            return [np.zeros(kokoro.SAMPLE_RATE, dtype=np.float32)]
+
+    engine = kokoro._Engine.__new__(kokoro._Engine)
+    engine.sess = FakeSession()
+    engine.phonikud = type("P", (), {"add_diacritics": staticmethod(lambda t: t)})()
+    engine.vocab = {c: i for i, c in enumerate("abcdefghijklmnopqrstuvwxyz ", 1)}
+    engine.style = np.zeros((510, 1, 256), dtype=np.float32)
+
+    import phonikud
+
+    original = phonikud.phonemize
+    phonikud.phonemize = lambda t: "shalom"
+    try:
+        engine.synthesize("שלום", 2.5)
+        engine.synthesize("שלום", 0.7)
+    finally:
+        phonikud.phonemize = original
+    assert np.allclose(FakeSession.speeds, [1.0, 0.7])
+
+
+def test_english_words_become_hebrew_style_phonemes():
+    from aura_whisper.speech.english import english_phonemes, mixed_phonemes
+
+    assert english_phonemes("push") == "pˈuʃ"
+    assert english_phonemes("meeting") == "mˈitiŋ"
+    assert english_phonemes("GitHub") == english_phonemes("github")
+    assert english_phonemes("readme")  # not in the dictionary: read + me
+    assert english_phonemes("XQZ").count(" ") == 2  # unknown acronym: spelled
+    out = mixed_phonemes("תעשה push ל-GitHub", lambda t: "[he]" if t.strip() else "")
+    assert out == "[he] pˈuʃ [he] " + english_phonemes("GitHub")
