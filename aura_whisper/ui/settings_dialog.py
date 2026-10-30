@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSlider,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
 from aura_whisper.audio import cues
 from aura_whisper.config import Config
 from aura_whisper.models.manager import format_size, scan_models
+from aura_whisper.speech.speaker import MAX_SPEED, MIN_SPEED, Speaker
 from aura_whisper.ui.hotkey_edit import HotkeyEdit
 from aura_whisper.ui.models_page import ModelsPage
 from aura_whisper.ui.modes_page import AIModesPage
@@ -108,7 +110,38 @@ class GeneralPage(QWidget):
         self.rewrite_selection_hotkey = HotkeyEdit(
             config.rewrite_selection_hotkey, self
         )
+        self.read_aloud_hotkey = HotkeyEdit(config.read_aloud_hotkey, self)
         self.hold_to_talk = ToggleSwitch(config.hold_to_talk, self)
+
+        # --- Read aloud: speed slider in 0.1× steps, with a spoken preview ---
+        self._speaker = Speaker()
+        self.read_aloud_speed = QSlider(Qt.Horizontal, self)
+        self.read_aloud_speed.setRange(round(MIN_SPEED * 10), round(MAX_SPEED * 10))
+        self.read_aloud_speed.setValue(round(config.read_aloud_speed * 10))
+        self.read_aloud_speed.setFixedWidth(180)
+        speed_label = QLabel(self)
+        speed_label.setMinimumWidth(36)
+        self.read_aloud_speed.valueChanged.connect(
+            lambda v: speed_label.setText(f"{v / 10:g}×")
+        )
+        speed_label.setText(f"{self.read_aloud_speed.value() / 10:g}×")
+        speed_preview = QPushButton("▶", self)
+        speed_preview.setFixedWidth(40)
+        speed_preview.setToolTip("Hear this speed")
+        speed_preview.setFocusPolicy(Qt.NoFocus)
+        speed_preview.clicked.connect(
+            lambda: self._speaker.speak(
+                "שלום, ככה תישמע ההקראה במהירות הזאת.",
+                self.read_aloud_speed.value() / 10,
+            )
+        )
+        speed_control = QWidget(self)
+        speed_row = QHBoxLayout(speed_control)
+        speed_row.setContentsMargins(0, 0, 0, 0)
+        speed_row.setSpacing(8)
+        speed_row.addWidget(self.read_aloud_speed)
+        speed_row.addWidget(speed_label)
+        speed_row.addWidget(speed_preview)
 
         # --- Behavior ---
         self.auto_paste = ToggleSwitch(config.auto_paste, self)
@@ -203,6 +236,19 @@ class GeneralPage(QWidget):
                         "Rewrite selection",
                         "Select text in any app, press to rewrite it with the active AI mode.",
                         self.rewrite_selection_hotkey,
+                    ),
+                    _setting_row(
+                        body,
+                        "Read selection aloud",
+                        "Select text in any app, press to hear it (Hebrew too). "
+                        "Press again or Esc to stop.",
+                        self.read_aloud_hotkey,
+                    ),
+                    _setting_row(
+                        body,
+                        "Reading speed",
+                        "How fast selected text is read aloud.",
+                        speed_control,
                     ),
                     _setting_row(
                         body,
@@ -519,6 +565,10 @@ class SettingsDialog(QDialog):
             avail.y() + int((avail.height() - height) * 0.38),
         )
 
+    def done(self, result: int) -> None:
+        self._general_page._speaker.stop()  # cut off a speed preview
+        super().done(result)
+
     def _accept(self) -> None:
         g = self._general_page
         a = self._advanced_page
@@ -532,6 +582,8 @@ class SettingsDialog(QDialog):
             hotkey=g.hotkey.combo() or "<cmd>+<shift>+<space>",
             ai_hotkey=g.ai_hotkey.combo() or "<cmd>+<shift>+<alt>+<space>",
             rewrite_selection_hotkey=g.rewrite_selection_hotkey.combo(),
+            read_aloud_hotkey=g.read_aloud_hotkey.combo(),
+            read_aloud_speed=g.read_aloud_speed.value() / 10,
             device=a.device.currentText(),
             compute_type=a.compute.currentText(),
             auto_paste=g.auto_paste.isChecked(),

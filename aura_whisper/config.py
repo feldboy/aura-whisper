@@ -85,7 +85,12 @@ class Config:
     ai_hotkey: str = "<cmd>+<shift>+<alt>+<space>"
     # Select text anywhere, press this, and the active AI mode rewrites it
     # in place. Empty = disabled.
-    rewrite_selection_hotkey: str = "<ctrl>+r"
+    rewrite_selection_hotkey: str = "<ctrl>+<shift>+r"
+    # Select text anywhere, press this to hear it read aloud (Hebrew uses the
+    # Carmit voice); press again or Esc to stop. Empty = disabled.
+    read_aloud_hotkey: str = "<ctrl>+r"
+    # Multiplier on the voice's natural pace, 0.5–3.0.
+    read_aloud_speed: float = 1.0
     active_mode: str = "Cleanup"
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "gemma4:12b"

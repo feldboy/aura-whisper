@@ -32,8 +32,10 @@ from aura_whisper.hotkey.global_hotkey import GlobalHotkey
 from aura_whisper.llm.worker import LLMWorker
 from aura_whisper.media import MediaController
 from aura_whisper.paste.active_app import ActiveAppPaster
+from aura_whisper.speech.speaker import Speaker
 from aura_whisper.transcribe.worker import TranscribeWorker
 from aura_whisper.ui.hud import RecordingHUD
+from aura_whisper.ui.read_aloud_panel import ReadAloudPanel
 from aura_whisper.ui.settings_dialog import SettingsDialog
 from aura_whisper.ui.transcription_view import TranscriptionView
 from aura_whisper.ui.waveform import Waveform
@@ -228,8 +230,23 @@ class MainWindow(QMainWindow):
             ok = self._selection_hotkey.start()
             _log(f"rewrite-selection hotkey {config.rewrite_selection_hotkey!r} active={ok}")
         self._selection_mode: dict | None = None
+        # True while grabbing the selection to read aloud (vs. to rewrite).
+        self._selection_for_speech = False
         self._selection_deadline = 0.0
         self._selection_change_count = -1
+
+        self._speaker = Speaker()
+        self._read_panel = ReadAloudPanel()
+        self._read_panel.pause_toggled.connect(self._toggle_read_pause)
+        self._read_panel.stop_requested.connect(self._stop_read_aloud)
+        self._read_panel.speed_changed.connect(self._on_read_speed_changed)
+        self._speech_poll = QTimer(self)
+        self._speech_poll.setInterval(200)
+        self._speech_poll.timeout.connect(self._check_speech_done)
+        self._read_aloud_hotkey = GlobalHotkey(config.read_aloud_hotkey, self)
+        self._read_aloud_hotkey.pressed.connect(self._on_read_aloud_pressed)
+        self._read_aloud_hotkey.error.connect(self._on_error)
+        self._start_read_aloud_hotkey()
 
         self._cancel_hotkey = GlobalHotkey("<escape>", self)
         self._cancel_hotkey.pressed.connect(self._on_cancel_hotkey_pressed)
@@ -303,6 +320,8 @@ class MainWindow(QMainWindow):
 
     def quit_app(self) -> None:
         self._quitting = True
+        self._speaker.stop()
+        self._read_panel.hide()
         self._tray.hide()
         self._hud.hide()
         self.close()
@@ -326,6 +345,7 @@ class MainWindow(QMainWindow):
             if self._config.rewrite_selection_hotkey:
                 self._selection_hotkey.set_combo(self._config.rewrite_selection_hotkey)
                 self._selection_hotkey.start()
+            self._start_read_aloud_hotkey()
             self._build_mode_hotkeys()
             self._recorder.set_warm(self._config.keep_mic_warm)
             self._update_mode_label()
@@ -388,6 +408,7 @@ class MainWindow(QMainWindow):
             self._config.hotkey,
             self._config.ai_hotkey,
             self._config.rewrite_selection_hotkey,
+            self._config.read_aloud_hotkey,
         }
         for mode in self._config.modes:
             combo = (mode.get("hotkey") or "").strip()
@@ -415,6 +436,12 @@ class MainWindow(QMainWindow):
             self._set_status("No AI mode enabled — check Settings")
             return
         self._selection_mode = mode
+        self._selection_for_speech = False
+        self._grab_selection()
+
+    def _grab_selection(self) -> None:
+        """Read the frontmost app's selection, then hand it to
+        ``_on_selection_ready``. ``_selection_mode`` is set while in flight."""
         self._paste.remember_frontmost()
         self._hud.anchor_to_cursor()
         # Don't show the HUD yet: raising it can make us the active app, and
@@ -422,7 +449,7 @@ class MainWindow(QMainWindow):
         text = self._paste.selected_text_ax()
         _log(f"AX selection: {None if text is None else len(text)} chars")
         if text and text.strip():
-            self._start_selection_rewrite(text)
+            self._on_selection_ready(text)
             return
         self._selection_deadline = time.monotonic() + 2.0
         self._copy_selection_when_keys_released()
@@ -460,7 +487,14 @@ class MainWindow(QMainWindow):
             self._hud.show_pill("Select text first")
             self._hud.hide_soon(1800)
             return
-        self._start_selection_rewrite(text)
+        self._on_selection_ready(text)
+
+    def _on_selection_ready(self, text: str) -> None:
+        if self._selection_for_speech:
+            self._selection_mode = None
+            self._start_read_aloud(text)
+        else:
+            self._start_selection_rewrite(text)
 
     def _start_selection_rewrite(self, text: str) -> None:
         mode = self._selection_mode
@@ -469,6 +503,58 @@ class MainWindow(QMainWindow):
         self._pending_gen = self._generation
         self._set_busy_status(f"Rewriting selection · {mode.get('name', 'AI')}")
         self._llm.rewrite_requested.emit(text, mode)
+
+    # --- read selection aloud ---
+
+    def _start_read_aloud_hotkey(self) -> None:
+        self._read_aloud_hotkey.stop()
+        combo = self._config.read_aloud_hotkey
+        if not combo or combo == self._config.rewrite_selection_hotkey:
+            return
+        self._read_aloud_hotkey.set_combo(combo)
+        ok = self._read_aloud_hotkey.start()
+        _log(f"read-aloud hotkey {combo!r} active={ok}")
+
+    def _on_read_aloud_pressed(self) -> None:
+        # Second press stops the reading.
+        if self._speaker.is_active():
+            self._stop_read_aloud()
+            return
+        if self._recorder.is_recording() or self._selection_mode is not None:
+            return
+        self._selection_mode = {"name": "Read aloud"}  # marks a grab in flight
+        self._selection_for_speech = True
+        self._grab_selection()
+
+    def _start_read_aloud(self, text: str) -> None:
+        speed = self._config.read_aloud_speed
+        if not self._speaker.speak(text, speed):
+            self._hud.show_pill("Couldn't read aloud")
+            self._hud.hide_soon(1800)
+            return
+        self._read_panel.set_speed(speed)
+        self._read_panel.set_paused(False)
+        self._read_panel.show_at_cursor()
+        self._speech_poll.start()
+
+    def _toggle_read_pause(self) -> None:
+        self._speaker.toggle_pause()
+        self._read_panel.set_paused(self._speaker.is_paused())
+
+    def _on_read_speed_changed(self, speed: float) -> None:
+        self._speaker.set_speed(speed)
+        # Remember it as the default for the next reading.
+        self._config.read_aloud_speed = speed
+        self._config.save()
+
+    def _check_speech_done(self) -> None:
+        if not self._speaker.is_active():
+            self._stop_read_aloud()
+
+    def _stop_read_aloud(self) -> None:
+        self._speech_poll.stop()
+        self._speaker.stop()
+        self._read_panel.hide()
 
     def _on_hotkey_released(self) -> None:
         if self._config.hold_to_talk:
@@ -481,6 +567,9 @@ class MainWindow(QMainWindow):
         """Escape: drop whatever is recording/transcribing/rewriting right now
         so a fresh take can start immediately, and so the discarded result
         can't surface later and get pasted over the next one."""
+        if self._speaker.is_active():
+            self._stop_read_aloud()
+            return
         if self._recorder.is_recording():
             self._cancel_recording_pending = True
             self._stop_recording()
