@@ -20,6 +20,11 @@ dependencies = [
     "faster-whisper>=1.0",
     "ctranslate2>=4.0",
     "huggingface_hub>=0.24",
+    # Natural Hebrew read-aloud (Kokoro): nikud + phonemes for the TTS model.
+    # speech/kokoro.py swaps in a local tokenizer loader during
+    # phonikud_onnx's init, so upgrades need a check.
+    "phonikud>=0.4",
+    "phonikud-onnx>=1.0.6,<1.1",
 ]
 
 [project.scripts]

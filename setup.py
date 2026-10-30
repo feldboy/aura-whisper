@@ -59,6 +59,11 @@ OPTIONS = {
         "faster_whisper",
         "ctranslate2",
         "onnxruntime",
+        # Kokoro Hebrew read-aloud (speech/kokoro.py).
+        "phonikud",
+        "phonikud_onnx",
+        "tokenizers",
+        "num2words",
     ],
     "includes": ["AppKit", "Quartz", "objc", "sounddevice", "cffi", "_cffi_backend"],
     "excludes": ["tkinter"],

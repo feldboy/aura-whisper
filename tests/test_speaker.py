@@ -37,3 +37,27 @@ def test_best_voice_prefers_premium_then_enhanced():
     assert best_voice_id(ids[:1] + ids[2:3], "Carmit").endswith("enhanced.he-IL.Carmit")
     assert best_voice_id(ids[:1], "Carmit") == ids[0]
     assert best_voice_id(ids[3:], "Carmit") is None
+
+
+def test_split_sentences_and_long_clauses():
+    from aura_whisper.speech.kokoro import split_sentences
+
+    assert split_sentences("שלום! מה נשמע?\nהכל טוב.") == ["שלום!", "מה נשמע?", "הכל טוב."]
+    long = ", ".join(["מילה אחת ועוד"] * 40)
+    chunks = split_sentences(long, max_chars=60)
+    assert all(len(c) <= 60 for c in chunks)
+    assert " ".join(chunks).split() == long.split()
+
+
+def test_time_stretch_shortens_without_changing_pitch():
+    import numpy as np
+
+    from aura_whisper.speech.kokoro import SAMPLE_RATE, time_stretch
+
+    t = np.arange(SAMPLE_RATE * 2) / SAMPLE_RATE
+    tone = np.sin(2 * np.pi * 200 * t).astype(np.float32)
+    out = time_stretch(tone, 1.5)
+    assert abs(len(out) - len(tone) / 1.5) < 0.05 * len(tone)
+    spectrum = np.abs(np.fft.rfft(out))
+    peak_hz = np.argmax(spectrum) * SAMPLE_RATE / len(out)
+    assert abs(peak_hz - 200) < 5

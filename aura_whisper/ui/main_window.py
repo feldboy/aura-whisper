@@ -32,7 +32,8 @@ from aura_whisper.hotkey.global_hotkey import GlobalHotkey
 from aura_whisper.llm.worker import LLMWorker
 from aura_whisper.media import MediaController
 from aura_whisper.paste.active_app import ActiveAppPaster
-from aura_whisper.speech.speaker import Speaker
+from aura_whisper.speech.kokoro import KokoroSpeaker, kokoro_installed
+from aura_whisper.speech.speaker import HEBREW_VOICE, Speaker, pick_voice
 from aura_whisper.transcribe.worker import TranscribeWorker
 from aura_whisper.ui.hud import RecordingHUD
 from aura_whisper.ui.read_aloud_panel import ReadAloudPanel
@@ -235,7 +236,17 @@ class MainWindow(QMainWindow):
         self._selection_deadline = 0.0
         self._selection_change_count = -1
 
-        self._speaker = Speaker()
+        self._system_speaker = Speaker()
+        self._kokoro = KokoroSpeaker()
+        # Whichever engine is reading right now; both share one interface.
+        self._speaker: Speaker | KokoroSpeaker = self._system_speaker
+        # Kokoro holds ~700 MB; drop it after the usual idle timeout.
+        self._kokoro_idle = QTimer(self)
+        self._kokoro_idle.setInterval(60_000)
+        self._kokoro_idle.timeout.connect(
+            lambda: self._kokoro.unload_if_idle(self._config.idle_unload_minutes)
+        )
+        self._kokoro_idle.start()
         self._read_panel = ReadAloudPanel()
         self._read_panel.pause_toggled.connect(self._toggle_read_pause)
         self._read_panel.stop_requested.connect(self._stop_read_aloud)
@@ -528,6 +539,13 @@ class MainWindow(QMainWindow):
 
     def _start_read_aloud(self, text: str) -> None:
         speed = self._config.read_aloud_speed
+        use_kokoro = (
+            self._config.hebrew_voice == "kokoro"
+            and pick_voice(text) == HEBREW_VOICE
+            and kokoro_installed()
+        )
+        self._speaker = self._kokoro if use_kokoro else self._system_speaker
+        _log(f"read aloud: {len(text)} chars, engine={'kokoro' if use_kokoro else 'system'}")
         if not self._speaker.speak(text, speed):
             self._hud.show_pill("Couldn't read aloud")
             self._hud.hide_soon(1800)
@@ -553,6 +571,8 @@ class MainWindow(QMainWindow):
 
     def _stop_read_aloud(self) -> None:
         self._speech_poll.stop()
+        if getattr(self._speaker, "error", None):
+            _log(f"read aloud error: {self._speaker.error}")
         self._speaker.stop()
         self._read_panel.hide()
 
@@ -584,6 +604,8 @@ class MainWindow(QMainWindow):
     def _start_recording(self, mode: dict | None) -> None:
         if self._recorder.is_recording():
             return
+        if self._speaker.is_active():
+            self._stop_read_aloud()
         if not self._config.is_configured:
             self._set_status("Set model folder in Settings")
             return

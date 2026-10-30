@@ -91,6 +91,10 @@ class Config:
     read_aloud_hotkey: str = "<ctrl>+r"
     # Multiplier on the voice's natural pace, 0.5–3.0.
     read_aloud_speed: float = 1.0
+    # Voice for Hebrew read-aloud: "carmit" (built into macOS) or "kokoro"
+    # (natural neural voice, ~630 MB download; falls back to Carmit until
+    # downloaded).
+    hebrew_voice: str = "carmit"
     active_mode: str = "Cleanup"
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "gemma4:12b"
