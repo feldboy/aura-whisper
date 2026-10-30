@@ -187,6 +187,7 @@ class GeneralPage(QWidget):
         )
         self.cue_sounds = ToggleSwitch(getattr(config, "cue_sounds", True), self)
         self.vad = ToggleSwitch(config.vad_filter, self)
+        self.phone_mic = ToggleSwitch(config.phone_mic_enabled, self)
 
         # Pick which cue sound to play, with an instant preview.
         self.cue_sound = QComboBox(self)
@@ -345,6 +346,22 @@ class GeneralPage(QWidget):
                         "a few seconds). Fillers and repeats are removed "
                         "instantly either way.",
                         self.polish,
+                    ),
+                ],
+            )
+        )
+
+        layout.addWidget(
+            _section(
+                body,
+                "Phone",
+                [
+                    _setting_row(
+                        body,
+                        "Use my phone as a microphone",
+                        "Dictate from your phone over Wi-Fi; the text lands where "
+                        "your Mac cursor is. Pair it from the menu bar → Pair phone…",
+                        self.phone_mic,
                     ),
                 ],
             )
@@ -697,6 +714,7 @@ class SettingsDialog(QDialog):
             idle_unload_minutes=a.idle_unload.currentData(),
             cue_sounds=g.cue_sounds.isChecked(),
             cue_sound=g.cue_sound.currentData() or "harp",
+            phone_mic_enabled=g.phone_mic.isChecked(),
             modes=modes,
             active_mode=active_mode,
             ollama_url=ollama_url,

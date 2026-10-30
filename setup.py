@@ -64,6 +64,8 @@ OPTIONS = {
         "phonikud_onnx",
         "tokenizers",
         "num2words",
+        # Pairing QR for the phone microphone (imported lazily).
+        "qrcode",
     ],
     "includes": ["AppKit", "Quartz", "objc", "sounddevice", "cffi", "_cffi_backend"],
     "excludes": ["tkinter"],

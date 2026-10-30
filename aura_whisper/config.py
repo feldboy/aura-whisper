@@ -114,6 +114,10 @@ class Config:
     idle_unload_minutes: int = 5
     cue_sounds: bool = True
     cue_sound: str = "harp"
+    # Serve a page on the LAN so a paired phone can dictate into this Mac
+    # (remote/server.py). The port is only bound while this is on.
+    phone_mic_enabled: bool = False
+    phone_mic_port: int = 8443
     # Transcription model files the user pointed at manually or downloaded
     # from a custom URL — kept so they stay listed even after switching the
     # active model away from them.

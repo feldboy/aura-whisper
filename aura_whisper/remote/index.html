@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111318">
+<title>AuraWhisper</title>
+<style>
+  :root {
+    --bg: #111318; --panel: #1b1e25; --text: #eef0f4; --muted: #8b92a1;
+    --accent: #4f7cff; --rec: #ff4d5e; --ok: #3ccf8e;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; min-height: 100dvh; background: var(--bg); color: var(--text);
+    font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column; padding: 16px;
+    padding-bottom: max(16px, env(safe-area-inset-bottom));
+  }
+  header { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  #status { font-size: 13px; color: var(--muted); text-align: left; }
+  #status.ok { color: var(--ok); }
+  #status.err { color: var(--rec); }
+  select {
+    margin-top: 14px; background: var(--panel); color: var(--text); border: 1px solid #2a2e38;
+    border-radius: 10px; padding: 10px; font: inherit; width: 100%;
+  }
+  main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; }
+  #mic {
+    width: 190px; height: 190px; border-radius: 50%; border: none;
+    background: var(--accent); color: #fff; font-size: 20px; font-weight: 600;
+    box-shadow: 0 10px 40px rgba(79,124,255,.35); transition: transform .1s, background .2s;
+    touch-action: manipulation; user-select: none;
+  }
+  #mic:active { transform: scale(.96); }
+  #mic.rec { background: var(--rec); box-shadow: 0 0 0 0 rgba(255,77,94,.6); animation: pulse 1.4s infinite; }
+  #mic.busy { background: #39404f; box-shadow: none; }
+  @keyframes pulse { 70% { box-shadow: 0 0 0 26px rgba(255,77,94,0); } 100% { box-shadow: 0 0 0 0 rgba(255,77,94,0); } }
+  #hint { color: var(--muted); font-size: 14px; min-height: 1.4em; text-align: center; }
+  #log { list-style: none; margin: 0; padding: 0; max-height: 30dvh; overflow-y: auto; }
+  #log li { background: var(--panel); border-radius: 10px; padding: 10px 12px; margin-top: 8px; font-size: 15px; }
+  #log li.err { color: var(--rec); }
+  #secure { margin-top: 12px; color: var(--muted); font-size: 14px; }
+  #secure summary { cursor: pointer; padding: 6px 0; }
+  #secure ol { padding-inline-start: 20px; margin: 6px 0; }
+  #secure li { margin: 6px 0; }
+  #secure a { color: var(--accent); }
+  #secure p { margin: 6px 0 0; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>🎙️ AuraWhisper</h1>
+    <span id="status">מתחבר…</span>
+  </header>
+
+  <select id="mode" aria-label="מצב">
+    <option value="">הכתבה רגילה</option>
+  </select>
+
+  <main>
+    <button id="mic">לחץ לדבר</button>
+    <div id="hint"></div>
+  </main>
+
+  <ul id="log"></ul>
+
+  <details id="secure">
+    <summary>🔒 להפסיק את אזהרת "לא בטוח"</summary>
+    <ol>
+      <li><a href="/ca.crt" download="AuraWhisper-CA.crt">הורד את תעודת AuraWhisper</a></li>
+      <li>בטלפון: הגדרות ← סיסמאות ואבטחה ← אבטחת מערכת ← הצפנה ופרטי כניסה ← התקנת אישור ← <b>אישור CA</b>, ובחר את הקובץ שהורדת. (לא מוצא? חפש "CA" בשורת החיפוש של ההגדרות.)</li>
+      <li>סגור את הלשונית ופתח את הקישור מחדש. האזהרה לא תופיע יותר.</li>
+    </ol>
+    <p>התעודה תקפה רק לכתובות ברשת הביתית שלך, ולא יכולה לשמש לאתרים אחרים.</p>
+  </details>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const KEY = "aura.key", MODE = "aura.mode";
+const mic = $("mic"), hint = $("hint"), statusEl = $("status"), modeEl = $("mode");
+
+// Per-phone key, issued once the Mac approves pairing.
+let deviceKey = "";
+try { deviceKey = localStorage.getItem(KEY) || ""; } catch {}
+const pairCode = new URLSearchParams(location.hash.slice(1)).get("pair");
+history.replaceState(null, "", location.pathname); // don't leave the code in history
+
+function setStatus(text, cls = "") { statusEl.textContent = text; statusEl.className = cls; }
+
+function addLog(text, isErr = false) {
+  const li = document.createElement("li");
+  li.textContent = text;
+  if (isErr) li.className = "err";
+  $("log").prepend(li);
+}
+
+const ERRORS = {
+  busy: "המק עסוק כרגע – נסה שוב",
+  unpaired: "המכשיר נותק",
+  "timed out": "המק לא הגיב בזמן",
+  "bad audio": "ההקלטה פגומה",
+  gone: "ההקלטה בוטלה במק",
+};
+
+async function api(path, { body, query, type } = {}) {
+  const q = query ? "?" + new URLSearchParams(query) : "";
+  const res = await fetch(path + q, {
+    method: body === undefined ? "GET" : "POST",
+    headers: { "X-Device-Key": deviceKey, ...(type ? { "Content-Type": type } : {}) },
+    body,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+function unpaired() {
+  deviceKey = "";
+  try { localStorage.removeItem(KEY); } catch {}
+  setStatus("לא מחובר – סרוק QR מ-Pair Phone במק", "err");
+}
+
+async function loadModes() {
+  try {
+    const { modes } = await api("/api/modes");
+    let saved = "";
+    try { saved = localStorage.getItem(MODE) || ""; } catch {}
+    modeEl.length = 1;
+    for (const name of modes) modeEl.add(new Option(`AI · ${name}`, name));
+    modeEl.value = modes.includes(saved) ? saved : "";
+  } catch {}
+}
+modeEl.addEventListener("change", () => { try { localStorage.setItem(MODE, modeEl.value); } catch {} });
+
+let polling = false;
+async function pollStatus() {
+  try {
+    const { ready } = await api("/api/status");
+    setStatus(ready ? "מחובר" : "בחר מודל בהגדרות במק", ready ? "ok" : "err");
+    if (!polling) { polling = true; loadModes(); }
+  } catch (e) {
+    if (e.message === "unpaired") return unpaired();
+    setStatus("אין חיבור למק", "err");
+  }
+  setTimeout(pollStatus, 5000);
+}
+
+async function pair(code) {
+  setStatus("ממתין לאישור במק…");
+  hint.textContent = "אשר את החיבור בחלון שנפתח במק";
+  const name = `${navigator.userAgentData?.platform || "Phone"} · ${new Date().toLocaleDateString("he-IL")}`;
+  const res = await fetch("/api/pair", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code, name }),
+  });
+  const data = await res.json().catch(() => ({}));
+  hint.textContent = "";
+  if (!res.ok) {
+    setStatus(data.error === "rejected" ? "החיבור נדחה במק" : "קוד חיבור לא תקף – צור QR חדש במק", "err");
+    return;
+  }
+  deviceKey = data.key;
+  try { localStorage.setItem(KEY, deviceKey); } catch {}
+  pollStatus();
+}
+
+// Keep the screen on while the page is open.
+async function keepAwake() { try { await navigator.wakeLock?.request("screen"); } catch {} }
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") keepAwake(); });
+
+// ---------- stream to the Mac while talking ----------
+// Raw 16 kHz PCM goes up every ~0.5 s, so the Mac transcribes finished
+// phrases while you speak and only the last bit is left when you stop.
+const RATE = 16000, CHUNK = RATE / 2;
+let stream = null, ctx = null, proc = null, streamId = null;
+let pending = [], pendingLen = 0, chain = Promise.resolve(), failed = null;
+let rsPos = 0, rsLast = 0; // resampler state carried across buffers
+
+// Linear resample to 16 kHz (if the browser didn't give us 16 kHz directly).
+function resample(input, inRate) {
+  if (inRate === RATE) return input;
+  const step = inRate / RATE, out = [];
+  for (; rsPos < input.length; rsPos += step) {
+    const i = Math.floor(rsPos), f = rsPos - i;
+    const a = i === 0 ? rsLast : input[i - 1], b = input[i];
+    out.push(a + (b - a) * f);
+  }
+  rsPos -= input.length;
+  rsLast = input[input.length - 1];
+  return Float32Array.from(out);
+}
+
+function takePcm() {
+  const pcm = new Int16Array(pendingLen);
+  let o = 0;
+  for (const part of pending) {
+    for (let i = 0; i < part.length; i++) {
+      const s = Math.max(-1, Math.min(1, part[i]));
+      pcm[o++] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+  }
+  pending = []; pendingLen = 0;
+  return pcm.buffer;
+}
+
+// Chunks go strictly in order: each waits for the previous one.
+function send(path) {
+  const body = takePcm(), id = streamId;
+  chain = chain.then(() => failed ? null :
+    api(path, { body, type: "application/octet-stream", query: { id } }));
+  chain = chain.catch((e) => { failed ??= e; });
+  return chain;
+}
+
+async function startRecording() {
+  stream ??= await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+  });
+  try { ctx = new AudioContext({ sampleRate: RATE }); } catch { ctx = new AudioContext(); }
+  await ctx.resume();
+  const query = modeEl.value ? { mode: modeEl.value } : undefined;
+  mic.className = "busy"; mic.textContent = "מתחבר…";
+  try {
+    ({ id: streamId } = await api("/api/stream/begin", { body: "", query }));
+  } catch (e) {
+    ctx.close(); ctx = null;
+    throw e;
+  }
+  failed = null; pending = []; pendingLen = 0; rsPos = 0; rsLast = 0;
+  chain = Promise.resolve();
+  const src = ctx.createMediaStreamSource(stream);
+  proc = ctx.createScriptProcessor(4096, 1, 1);
+  proc.onaudioprocess = (e) => {
+    const pcm = resample(new Float32Array(e.inputBuffer.getChannelData(0)), ctx.sampleRate);
+    pending.push(pcm); pendingLen += pcm.length;
+    if (pendingLen >= CHUNK) send("/api/stream/chunk");
+  };
+  src.connect(proc); proc.connect(ctx.destination);
+  mic.className = "rec"; mic.textContent = "עצור"; hint.textContent = "מקליט…";
+}
+
+async function stopRecording() {
+  proc.onaudioprocess = null; proc.disconnect();
+  ctx.close(); ctx = null; proc = null;
+  mic.className = "busy"; mic.textContent = "מעבד…"; hint.textContent = "";
+  const body = takePcm(), id = streamId;
+  try {
+    await chain;
+    if (failed) throw failed;
+    const { text } = await api("/api/stream/end", { body, type: "application/octet-stream", query: { id } });
+    addLog(text || "(לא זוהה דיבור)");
+  } catch (e) {
+    if (e.message === "unpaired") unpaired();
+    addLog("שגיאה: " + (ERRORS[e.message] || e.message), true);
+  }
+  mic.className = ""; mic.textContent = "לחץ לדבר";
+}
+
+mic.addEventListener("click", async () => {
+  keepAwake();
+  if (!deviceKey) return;
+  try {
+    if (mic.className === "rec") await stopRecording();
+    else if (mic.className !== "busy") await startRecording();
+  } catch (e) {
+    addLog("אין גישה למיקרופון: " + e.message, true);
+    mic.className = ""; mic.textContent = "לחץ לדבר";
+  }
+});
+
+if (pairCode && !deviceKey) pair(pairCode).catch(() => setStatus("אין חיבור למק", "err"));
+else if (deviceKey) pollStatus();
+else unpaired();
+</script>
+</body>
+</html>

@@ -25,6 +25,8 @@ dependencies = [
     # phonikud_onnx's init, so upgrades need a check.
     "phonikud>=0.4",
     "phonikud-onnx>=1.0.6,<1.1",
+    # Pairing QR for the phone microphone (remote/); pure Python.
+    "qrcode>=7.4",
 ]
 
 [project.scripts]
@@ -34,4 +36,4 @@ aura-whisper = "aura_whisper.__main__:main"
 include = ["aura_whisper*"]
 
 [tool.setuptools.package-data]
-aura_whisper = ["resources/*.qss", "resources/cmudict/*"]
+aura_whisper = ["resources/*.qss", "resources/cmudict/*", "remote/*.html"]
