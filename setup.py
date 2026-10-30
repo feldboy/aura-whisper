@@ -59,6 +59,13 @@ OPTIONS = {
         "faster_whisper",
         "ctranslate2",
         "onnxruntime",
+        # Kokoro Hebrew read-aloud (speech/kokoro.py).
+        "phonikud",
+        "phonikud_onnx",
+        "tokenizers",
+        "num2words",
+        # Pairing QR for the phone microphone (imported lazily).
+        "qrcode",
     ],
     "includes": ["AppKit", "Quartz", "objc", "sounddevice", "cffi", "_cffi_backend"],
     "excludes": ["tkinter"],

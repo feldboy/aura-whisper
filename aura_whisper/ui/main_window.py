@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 import time
 
 import numpy as np
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMenu,
+    QMessageBox,
     QPushButton,
     QSystemTrayIcon,
     QVBoxLayout,
@@ -32,8 +34,20 @@ from aura_whisper.hotkey.global_hotkey import GlobalHotkey
 from aura_whisper.llm.worker import LLMWorker
 from aura_whisper.media import MediaController
 from aura_whisper.paste.active_app import ActiveAppPaster
-from aura_whisper.transcribe.worker import TranscribeWorker
+from aura_whisper.remote.bridge import PhoneBridge
+from aura_whisper.remote.server import (
+    Busy,
+    Hooks,
+    PhoneServer,
+    StreamGone,
+    is_hallucination,
+)
+from aura_whisper.speech.kokoro import KokoroSpeaker, kokoro_installed
+from aura_whisper.speech.speaker import HEBREW_VOICE, Speaker, pick_voice
+from aura_whisper.transcribe.worker import TranscribeWorker, has_speech
 from aura_whisper.ui.hud import RecordingHUD
+from aura_whisper.ui.pair_dialog import PairPhoneDialog
+from aura_whisper.ui.read_aloud_panel import ReadAloudPanel
 from aura_whisper.ui.settings_dialog import SettingsDialog
 from aura_whisper.ui.transcription_view import TranscriptionView
 from aura_whisper.ui.waveform import Waveform
@@ -228,8 +242,33 @@ class MainWindow(QMainWindow):
             ok = self._selection_hotkey.start()
             _log(f"rewrite-selection hotkey {config.rewrite_selection_hotkey!r} active={ok}")
         self._selection_mode: dict | None = None
+        # True while grabbing the selection to read aloud (vs. to rewrite).
+        self._selection_for_speech = False
         self._selection_deadline = 0.0
         self._selection_change_count = -1
+
+        self._system_speaker = Speaker()
+        self._kokoro = KokoroSpeaker()
+        # Whichever engine is reading right now; both share one interface.
+        self._speaker: Speaker | KokoroSpeaker = self._system_speaker
+        # Kokoro holds ~700 MB; drop it after the usual idle timeout.
+        self._kokoro_idle = QTimer(self)
+        self._kokoro_idle.setInterval(60_000)
+        self._kokoro_idle.timeout.connect(
+            lambda: self._kokoro.unload_if_idle(self._config.idle_unload_minutes)
+        )
+        self._kokoro_idle.start()
+        self._read_panel = ReadAloudPanel()
+        self._read_panel.pause_toggled.connect(self._toggle_read_pause)
+        self._read_panel.stop_requested.connect(self._stop_read_aloud)
+        self._read_panel.speed_changed.connect(self._on_read_speed_changed)
+        self._speech_poll = QTimer(self)
+        self._speech_poll.setInterval(200)
+        self._speech_poll.timeout.connect(self._check_speech_done)
+        self._read_aloud_hotkey = GlobalHotkey(config.read_aloud_hotkey, self)
+        self._read_aloud_hotkey.pressed.connect(self._on_read_aloud_pressed)
+        self._read_aloud_hotkey.error.connect(self._on_error)
+        self._start_read_aloud_hotkey()
 
         self._cancel_hotkey = GlobalHotkey("<escape>", self)
         self._cancel_hotkey.pressed.connect(self._on_cancel_hotkey_pressed)
@@ -239,6 +278,27 @@ class MainWindow(QMainWindow):
         self._build_mode_hotkeys()
 
         self._recorder.set_warm(config.keep_mic_warm)
+
+        # Phone as a microphone: HTTP threads hand audio over via the bridge;
+        # _phone_job is the phone's in-flight request, resolved on delivery.
+        self._phone_bridge = PhoneBridge(self)
+        self._phone_bridge.audio_received.connect(self._on_phone_audio)
+        self._phone_bridge.approval_requested.connect(self._on_phone_approval)
+        self._phone_server: PhoneServer | None = None
+        self._phone_job = None
+        self._phone_stream: dict | None = None
+        # The phone went quiet mid-stream (screen off, Wi-Fi dropped).
+        self._phone_stream_watchdog = QTimer(self)
+        self._phone_stream_watchdog.setSingleShot(True)
+        self._phone_stream_watchdog.setInterval(15_000)
+        self._phone_stream_watchdog.timeout.connect(
+            lambda: self._cancel_phone_stream("Phone disconnected")
+        )
+        self._phone_bridge.stream_begin.connect(self._on_phone_stream_begin)
+        self._phone_bridge.stream_chunk.connect(self._on_phone_stream_chunk)
+        self._phone_bridge.stream_end.connect(self._on_phone_stream_end)
+        self._pair_dialog: PairPhoneDialog | None = None
+        self._apply_phone_server()
 
         self._build_tray()
         self._update_mode_label()
@@ -269,6 +329,10 @@ class MainWindow(QMainWindow):
         settings_action = QAction("Settings…", menu)
         settings_action.triggered.connect(self.open_settings)
         menu.addAction(settings_action)
+
+        pair_action = QAction("Pair phone…", menu)
+        pair_action.triggered.connect(self.open_pair_phone)
+        menu.addAction(pair_action)
 
         menu.addSeparator()
         quit_action = QAction("Quit AuraWhisper", menu)
@@ -303,6 +367,8 @@ class MainWindow(QMainWindow):
 
     def quit_app(self) -> None:
         self._quitting = True
+        self._speaker.stop()
+        self._read_panel.hide()
         self._tray.hide()
         self._hud.hide()
         self.close()
@@ -326,12 +392,225 @@ class MainWindow(QMainWindow):
             if self._config.rewrite_selection_hotkey:
                 self._selection_hotkey.set_combo(self._config.rewrite_selection_hotkey)
                 self._selection_hotkey.start()
+            self._start_read_aloud_hotkey()
             self._build_mode_hotkeys()
             self._recorder.set_warm(self._config.keep_mic_warm)
             self._update_mode_label()
             self._rebuild_mode_menu()
+            self._apply_phone_server()
             if self._config.is_configured:
                 QTimer.singleShot(200, self._worker.preload_requested.emit)
+
+    # --- phone microphone ---
+
+    def _apply_phone_server(self) -> None:
+        """Run the phone server iff enabled (restarting on a port change)."""
+        server = self._phone_server
+        want = self._config.phone_mic_enabled
+        if server is not None and (not want or server.port != self._config.phone_mic_port):
+            server.stop()
+            self._phone_server = server = None
+        if not want or server is not None:
+            return
+        bridge = self._phone_bridge
+        server = PhoneServer(
+            Hooks(
+                submit_audio=bridge.submit_audio,
+                request_approval=bridge.request_approval,
+                mode_names=lambda: [
+                    m.get("name", "") for m in self._config.modes if m.get("enabled", True)
+                ],
+                ready=lambda: self._config.is_configured,
+                paired=bridge.paired.emit,
+                stream_begin=bridge.begin_stream,
+                stream_chunk=bridge.push_chunk,
+                stream_end=bridge.end_stream,
+            ),
+            self._config.phone_mic_port,
+        )
+        try:
+            server.start()
+        except Exception as e:
+            _log(f"phone mic server failed: {e}")
+            self._on_error(f"Phone mic: couldn't use port {self._config.phone_mic_port} ({e})")
+            return
+        self._phone_server = server
+        _log(f"phone mic server on {server.ip}:{server.port}")
+
+    def open_pair_phone(self) -> None:
+        if not self._config.phone_mic_enabled:
+            self._config.phone_mic_enabled = True
+            self._config.save()
+            self._apply_phone_server()
+        if self._phone_server is None:
+            return  # _apply_phone_server already reported why
+        _activate_app()
+        if self._pair_dialog is None:
+            self._pair_dialog = PairPhoneDialog(self._phone_server, self)
+            self._phone_bridge.paired.connect(self._pair_dialog.on_paired)
+            self._pair_dialog.finished.connect(self._on_pair_dialog_closed)
+        self._pair_dialog.show()
+        self._pair_dialog.raise_()
+
+    def _on_pair_dialog_closed(self) -> None:
+        dialog, self._pair_dialog = self._pair_dialog, None
+        if dialog is not None:
+            self._phone_bridge.paired.disconnect(dialog.on_paired)
+            dialog.deleteLater()
+
+    @Slot(str, str, object)
+    def _on_phone_approval(self, name: str, ip: str, future) -> None:
+        _activate_app()
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("AuraWhisper")
+        box.setText("A phone wants to use AuraWhisper as its microphone.")
+        box.setInformativeText(f"{name}\n{ip}\n\nAllow it to dictate into this Mac?")
+        allow = box.addButton("Allow", QMessageBox.AcceptRole)
+        deny = box.addButton("Deny", QMessageBox.RejectRole)
+        box.setDefaultButton(deny)
+        QTimer.singleShot(60_000, box.reject)  # the phone stops waiting soon after
+        box.exec()
+        approved = box.clickedButton() is allow
+        _log(f"phone pairing {'approved' if approved else 'denied'}: {name} ({ip})")
+        if not future.done():
+            future.set_result(approved)
+
+    def _phone_mode(self, mode_name: str, future) -> tuple[bool, dict | None]:
+        """Can the phone start a take now? Fails ``future`` if not; returns
+        (ok, AI mode or None)."""
+        busy = (
+            self._recorder.is_recording()
+            or self._phone_job is not None
+            or self._phone_stream is not None
+            or self._selection_mode is not None
+        )
+        if busy:
+            future.set_exception(Busy())
+            return False, None
+        if not self._config.is_configured:
+            future.set_exception(RuntimeError("No model set on the Mac"))
+            return False, None
+        if not mode_name:
+            return True, None
+        mode = next(
+            (
+                m
+                for m in self._config.modes
+                if m.get("name") == mode_name and m.get("enabled", True)
+            ),
+            None,
+        )
+        if mode is None:
+            future.set_exception(RuntimeError(f"AI mode “{mode_name}” not found"))
+            return False, None
+        return True, mode
+
+    @Slot(object, str, object)
+    def _on_phone_audio(self, audio: np.ndarray, mode_name: str, future) -> None:
+        ok, mode = self._phone_mode(mode_name, future)
+        if ok:
+            self._phone_transcribe(audio, mode, future)
+
+    def _phone_transcribe(self, audio: np.ndarray, mode: dict | None, future) -> None:
+        if audio.size < 1600 or not has_speech(audio):
+            self._worker.stream_cancel_requested.emit()
+            self._hud.set_busy(False)
+            self._set_status("No speech detected")
+            self._hud.hide_soon()
+            future.set_result("")
+            return
+        if self._speaker.is_active():
+            self._stop_read_aloud()
+        self._phone_job = future
+        self._pending_mode = mode
+        self._paste.remember_frontmost()
+        self._hud.anchor_to_cursor()
+        status = "📱 Processing…" if mode is None else f"📱 Processing… ({mode['name']} mode)"
+        self._set_status(status)
+        self._hud.show_pill(status)
+        # A fresh generation: nothing still in flight may paste over this.
+        self._generation += 1
+        self._pending_gen = self._generation
+        QTimer.singleShot(0, lambda: self._worker.transcribe_requested.emit(audio))
+
+    # Live stream: the phone sends audio while the user talks and the worker
+    # transcribes finished phrases as they arrive (same as the Mac mic), so
+    # on stop only the last few seconds are left.
+
+    @Slot(str, object)
+    def _on_phone_stream_begin(self, mode_name: str, future) -> None:
+        ok, mode = self._phone_mode(mode_name, future)
+        if not ok:
+            return
+        if self._speaker.is_active():
+            self._stop_read_aloud()
+        stream_id = secrets.token_urlsafe(12)
+        self._phone_stream = {"id": stream_id, "mode": mode, "chunks": []}
+        self._phone_stream_watchdog.start()
+        self._hud.anchor_to_cursor()
+        self._hud.set_recording(True)
+        status = "📱 Listening…" if mode is None else f"📱 Listening… ({mode['name']} mode)"
+        self._set_status(status)
+        self._hud.show_pill(status)
+        # Loads the model now, while the user is still talking.
+        self._worker.stream_begin_requested.emit()
+        future.set_result(stream_id)
+
+    def _phone_stream_for(self, stream_id: str, future) -> dict | None:
+        stream = self._phone_stream
+        if stream is None or not secrets.compare_digest(stream["id"], stream_id):
+            future.set_exception(StreamGone())
+            return None
+        return stream
+
+    @Slot(str, object, object)
+    def _on_phone_stream_chunk(self, stream_id: str, audio: np.ndarray, future) -> None:
+        stream = self._phone_stream_for(stream_id, future)
+        if stream is None:
+            return
+        self._phone_stream_watchdog.start()
+        if audio.size:
+            stream["chunks"].append(audio)
+            self._hud.waveform.push_frame(audio)
+            self._worker.stream_frame.emit(audio)
+        future.set_result(None)
+
+    @Slot(str, object, object)
+    def _on_phone_stream_end(self, stream_id: str, audio: np.ndarray, future) -> None:
+        stream = self._phone_stream_for(stream_id, future)
+        if stream is None:
+            return
+        self._phone_stream = None
+        self._phone_stream_watchdog.stop()
+        self._hud.set_recording(False)
+        if audio.size:
+            stream["chunks"].append(audio)
+            self._worker.stream_frame.emit(audio)
+        chunks = stream["chunks"]
+        buffer = np.concatenate(chunks) if chunks else np.zeros(0, np.float32)
+        self._phone_transcribe(buffer, stream["mode"], future)
+
+    def _cancel_phone_stream(self, status: str = "Cancelled") -> bool:
+        if self._phone_stream is None:
+            return False
+        self._phone_stream = None
+        self._phone_stream_watchdog.stop()
+        self._worker.stream_cancel_requested.emit()
+        self._hud.set_recording(False)
+        self._hud.set_busy(False)
+        self._set_status(status)
+        self._hud.hide_soon()
+        return True
+
+    def _finish_phone_job(self, text: str | None = None, error: str | None = None) -> None:
+        future, self._phone_job = self._phone_job, None
+        if future is None or future.done():
+            return
+        if error is not None:
+            future.set_exception(RuntimeError(error))
+        else:
+            future.set_result(text or "")
 
     def _update_mode_label(self) -> None:
         mode = self._config.get_active_mode()
@@ -388,6 +667,7 @@ class MainWindow(QMainWindow):
             self._config.hotkey,
             self._config.ai_hotkey,
             self._config.rewrite_selection_hotkey,
+            self._config.read_aloud_hotkey,
         }
         for mode in self._config.modes:
             combo = (mode.get("hotkey") or "").strip()
@@ -415,6 +695,12 @@ class MainWindow(QMainWindow):
             self._set_status("No AI mode enabled — check Settings")
             return
         self._selection_mode = mode
+        self._selection_for_speech = False
+        self._grab_selection()
+
+    def _grab_selection(self) -> None:
+        """Read the frontmost app's selection, then hand it to
+        ``_on_selection_ready``. ``_selection_mode`` is set while in flight."""
         self._paste.remember_frontmost()
         self._hud.anchor_to_cursor()
         # Don't show the HUD yet: raising it can make us the active app, and
@@ -422,7 +708,7 @@ class MainWindow(QMainWindow):
         text = self._paste.selected_text_ax()
         _log(f"AX selection: {None if text is None else len(text)} chars")
         if text and text.strip():
-            self._start_selection_rewrite(text)
+            self._on_selection_ready(text)
             return
         self._selection_deadline = time.monotonic() + 2.0
         self._copy_selection_when_keys_released()
@@ -460,7 +746,14 @@ class MainWindow(QMainWindow):
             self._hud.show_pill("Select text first")
             self._hud.hide_soon(1800)
             return
-        self._start_selection_rewrite(text)
+        self._on_selection_ready(text)
+
+    def _on_selection_ready(self, text: str) -> None:
+        if self._selection_for_speech:
+            self._selection_mode = None
+            self._start_read_aloud(text)
+        else:
+            self._start_selection_rewrite(text)
 
     def _start_selection_rewrite(self, text: str) -> None:
         mode = self._selection_mode
@@ -469,6 +762,67 @@ class MainWindow(QMainWindow):
         self._pending_gen = self._generation
         self._set_busy_status(f"Rewriting selection · {mode.get('name', 'AI')}")
         self._llm.rewrite_requested.emit(text, mode)
+
+    # --- read selection aloud ---
+
+    def _start_read_aloud_hotkey(self) -> None:
+        self._read_aloud_hotkey.stop()
+        combo = self._config.read_aloud_hotkey
+        if not combo or combo == self._config.rewrite_selection_hotkey:
+            return
+        self._read_aloud_hotkey.set_combo(combo)
+        ok = self._read_aloud_hotkey.start()
+        _log(f"read-aloud hotkey {combo!r} active={ok}")
+
+    def _on_read_aloud_pressed(self) -> None:
+        # Second press stops the reading.
+        if self._speaker.is_active():
+            self._stop_read_aloud()
+            return
+        if self._recorder.is_recording() or self._selection_mode is not None:
+            return
+        self._selection_mode = {"name": "Read aloud"}  # marks a grab in flight
+        self._selection_for_speech = True
+        self._grab_selection()
+
+    def _start_read_aloud(self, text: str) -> None:
+        speed = self._config.read_aloud_speed
+        use_kokoro = (
+            self._config.hebrew_voice == "kokoro"
+            and pick_voice(text) == HEBREW_VOICE
+            and kokoro_installed()
+        )
+        self._speaker = self._kokoro if use_kokoro else self._system_speaker
+        _log(f"read aloud: {len(text)} chars, engine={'kokoro' if use_kokoro else 'system'}")
+        if not self._speaker.speak(text, speed):
+            self._hud.show_pill("Couldn't read aloud")
+            self._hud.hide_soon(1800)
+            return
+        self._read_panel.set_speed(speed)
+        self._read_panel.set_paused(False)
+        self._read_panel.show_at_cursor()
+        self._speech_poll.start()
+
+    def _toggle_read_pause(self) -> None:
+        self._speaker.toggle_pause()
+        self._read_panel.set_paused(self._speaker.is_paused())
+
+    def _on_read_speed_changed(self, speed: float) -> None:
+        self._speaker.set_speed(speed)
+        # Remember it as the default for the next reading.
+        self._config.read_aloud_speed = speed
+        self._config.save()
+
+    def _check_speech_done(self) -> None:
+        if not self._speaker.is_active():
+            self._stop_read_aloud()
+
+    def _stop_read_aloud(self) -> None:
+        self._speech_poll.stop()
+        if getattr(self._speaker, "error", None):
+            _log(f"read aloud error: {self._speaker.error}")
+        self._speaker.stop()
+        self._read_panel.hide()
 
     def _on_hotkey_released(self) -> None:
         if self._config.hold_to_talk:
@@ -481,13 +835,19 @@ class MainWindow(QMainWindow):
         """Escape: drop whatever is recording/transcribing/rewriting right now
         so a fresh take can start immediately, and so the discarded result
         can't surface later and get pasted over the next one."""
+        if self._speaker.is_active():
+            self._stop_read_aloud()
+            return
         if self._recorder.is_recording():
             self._cancel_recording_pending = True
             self._stop_recording()
             return
+        if self._cancel_phone_stream():
+            return
         if self._pending_gen == self._generation:
             self._generation += 1
             self._pending_mode = None
+            self._finish_phone_job(error="Cancelled on the Mac")
             self._hud.set_busy(False)
             self._set_status("Cancelled")
             self._hud.hide_soon()
@@ -495,9 +855,17 @@ class MainWindow(QMainWindow):
     def _start_recording(self, mode: dict | None) -> None:
         if self._recorder.is_recording():
             return
+        if self._speaker.is_active():
+            self._stop_read_aloud()
         if not self._config.is_configured:
             self._set_status("Set model folder in Settings")
             return
+        self._cancel_phone_stream()
+        if self._phone_job is not None:
+            # The Mac mic takes over; drop the phone's take so it can't paste
+            # over this one.
+            self._generation += 1
+            self._finish_phone_job(error="Recording started on the Mac")
         # Pick up headphones/mics connected since the last take. Must run
         # before the start cue: rebuilding PortAudio stops any playing sound.
         self._recorder.refresh_devices()
@@ -557,10 +925,14 @@ class MainWindow(QMainWindow):
     def _on_text_ready(self, text: str) -> None:
         if self._pending_gen != self._generation:
             return
+        if self._phone_job is not None and is_hallucination(text):
+            text = ""
         if not text.strip():
+            self._pending_mode = None
             self._hud.set_busy(False)
             self._set_status("No speech detected")
             self._hud.hide_soon()
+            self._finish_phone_job("")
             return
         mode = self._pending_mode
         self._pending_mode = None
@@ -583,6 +955,7 @@ class MainWindow(QMainWindow):
     def _on_transcribe_error(self, message: str) -> None:
         if self._pending_gen != self._generation:
             return
+        self._finish_phone_job(error=message)
         self._on_error(message)
 
     def _on_rewrite_error(self, message: str) -> None:
@@ -594,6 +967,7 @@ class MainWindow(QMainWindow):
             _log(f"polish failed, pasting raw text: {message}")
             self._deliver(raw)
             return
+        self._finish_phone_job(error=message)
         self._on_error(message)
 
     def _deliver(self, text: str) -> None:
@@ -605,6 +979,7 @@ class MainWindow(QMainWindow):
         else:
             self._hud.set_status("Ready — copied to app window")
         self._hud.hide_soon()
+        self._finish_phone_job(text)
 
     def _on_error(self, message: str) -> None:
         _log(f"error: {message}")
@@ -673,6 +1048,8 @@ class MainWindow(QMainWindow):
             self._recorder.shutdown()
         except Exception:
             pass
+        if self._phone_server is not None:
+            self._phone_server.stop()
         for thread in (self._worker_thread, self._llm_thread):
             thread.quit()
             thread.wait(2000)

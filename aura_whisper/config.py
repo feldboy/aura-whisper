@@ -85,7 +85,16 @@ class Config:
     ai_hotkey: str = "<cmd>+<shift>+<alt>+<space>"
     # Select text anywhere, press this, and the active AI mode rewrites it
     # in place. Empty = disabled.
-    rewrite_selection_hotkey: str = "<ctrl>+r"
+    rewrite_selection_hotkey: str = "<ctrl>+<shift>+r"
+    # Select text anywhere, press this to hear it read aloud (Hebrew uses the
+    # Carmit voice); press again or Esc to stop. Empty = disabled.
+    read_aloud_hotkey: str = "<ctrl>+r"
+    # Multiplier on the voice's natural pace, 0.5–3.0.
+    read_aloud_speed: float = 1.0
+    # Voice for Hebrew read-aloud: "carmit" (built into macOS) or "kokoro"
+    # (natural neural voice, ~630 MB download; falls back to Carmit until
+    # downloaded).
+    hebrew_voice: str = "carmit"
     active_mode: str = "Cleanup"
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "gemma4:12b"
@@ -105,6 +114,10 @@ class Config:
     idle_unload_minutes: int = 5
     cue_sounds: bool = True
     cue_sound: str = "harp"
+    # Serve a page on the LAN so a paired phone can dictate into this Mac
+    # (remote/server.py). The port is only bound while this is on.
+    phone_mic_enabled: bool = False
+    phone_mic_port: int = 8443
     # Transcription model files the user pointed at manually or downloaded
     # from a custom URL — kept so they stay listed even after switching the
     # active model away from them.

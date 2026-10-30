@@ -12,7 +12,9 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
+    QSlider,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -21,6 +23,13 @@ from PySide6.QtWidgets import (
 from aura_whisper.audio import cues
 from aura_whisper.config import Config
 from aura_whisper.models.manager import format_size, scan_models
+from aura_whisper.speech.kokoro import (
+    DOWNLOAD_SIZE,
+    KokoroDownloader,
+    KokoroSpeaker,
+    kokoro_installed,
+)
+from aura_whisper.speech.speaker import MAX_SPEED, MIN_SPEED, Speaker
 from aura_whisper.ui.hotkey_edit import HotkeyEdit
 from aura_whisper.ui.models_page import ModelsPage
 from aura_whisper.ui.modes_page import AIModesPage
@@ -108,7 +117,66 @@ class GeneralPage(QWidget):
         self.rewrite_selection_hotkey = HotkeyEdit(
             config.rewrite_selection_hotkey, self
         )
+        self.read_aloud_hotkey = HotkeyEdit(config.read_aloud_hotkey, self)
         self.hold_to_talk = ToggleSwitch(config.hold_to_talk, self)
+
+        # --- Read aloud: speed slider in 0.1× steps, with a spoken preview ---
+        self._speaker = Speaker()
+        self.read_aloud_speed = QSlider(Qt.Horizontal, self)
+        self.read_aloud_speed.setRange(round(MIN_SPEED * 10), round(MAX_SPEED * 10))
+        self.read_aloud_speed.setValue(round(config.read_aloud_speed * 10))
+        self.read_aloud_speed.setFixedWidth(180)
+        speed_label = QLabel(self)
+        speed_label.setMinimumWidth(36)
+        self.read_aloud_speed.valueChanged.connect(
+            lambda v: speed_label.setText(f"{v / 10:g}×")
+        )
+        speed_label.setText(f"{self.read_aloud_speed.value() / 10:g}×")
+        speed_preview = QPushButton("▶", self)
+        speed_preview.setFixedWidth(40)
+        speed_preview.setToolTip("Hear this speed")
+        speed_preview.setFocusPolicy(Qt.NoFocus)
+        speed_preview.clicked.connect(self._preview_reading)
+        speed_control = QWidget(self)
+        speed_row = QHBoxLayout(speed_control)
+        speed_row.setContentsMargins(0, 0, 0, 0)
+        speed_row.setSpacing(8)
+        speed_row.addWidget(self.read_aloud_speed)
+        speed_row.addWidget(speed_label)
+        speed_row.addWidget(speed_preview)
+
+        # --- Hebrew voice: built-in Carmit, or the downloadable Kokoro ---
+        self._kokoro: KokoroSpeaker | None = None
+        self._kokoro_downloader: KokoroDownloader | None = None
+        self.hebrew_voice = QComboBox(self)
+        self.hebrew_voice.addItem("Carmit (built into macOS)", "carmit")
+        self.hebrew_voice.addItem("Kokoro · natural (Shaul)", "kokoro")
+        voice_idx = self.hebrew_voice.findData(config.hebrew_voice)
+        self.hebrew_voice.setCurrentIndex(max(voice_idx, 0))
+        self.hebrew_voice.setMinimumWidth(200)
+        self._voice_download_btn = QPushButton(
+            f"Download {format_size(DOWNLOAD_SIZE)}", self
+        )
+        self._voice_download_btn.setObjectName("downloadBtn")
+        self._voice_download_btn.setCursor(Qt.PointingHandCursor)
+        self._voice_download_btn.clicked.connect(self._download_kokoro)
+        self._voice_progress = QProgressBar(self)
+        self._voice_progress.setFixedHeight(6)
+        self._voice_progress.setTextVisible(False)
+        self._voice_progress.setVisible(False)
+        voice_control = QWidget(self)
+        voice_col = QVBoxLayout(voice_control)
+        voice_col.setContentsMargins(0, 0, 0, 0)
+        voice_col.setSpacing(6)
+        voice_row = QHBoxLayout()
+        voice_row.setContentsMargins(0, 0, 0, 0)
+        voice_row.setSpacing(8)
+        voice_row.addWidget(self.hebrew_voice)
+        voice_row.addWidget(self._voice_download_btn)
+        voice_col.addLayout(voice_row)
+        voice_col.addWidget(self._voice_progress)
+        self.hebrew_voice.currentIndexChanged.connect(self._update_voice_download)
+        self._update_voice_download()
 
         # --- Behavior ---
         self.auto_paste = ToggleSwitch(config.auto_paste, self)
@@ -119,6 +187,7 @@ class GeneralPage(QWidget):
         )
         self.cue_sounds = ToggleSwitch(getattr(config, "cue_sounds", True), self)
         self.vad = ToggleSwitch(config.vad_filter, self)
+        self.phone_mic = ToggleSwitch(config.phone_mic_enabled, self)
 
         # Pick which cue sound to play, with an instant preview.
         self.cue_sound = QComboBox(self)
@@ -206,6 +275,26 @@ class GeneralPage(QWidget):
                     ),
                     _setting_row(
                         body,
+                        "Read selection aloud",
+                        "Select text in any app, press to hear it (Hebrew too). "
+                        "Press again or Esc to stop.",
+                        self.read_aloud_hotkey,
+                    ),
+                    _setting_row(
+                        body,
+                        "Hebrew voice",
+                        "Kokoro sounds far more natural and runs offline once "
+                        "downloaded (non-commercial license).",
+                        voice_control,
+                    ),
+                    _setting_row(
+                        body,
+                        "Reading speed",
+                        "How fast selected text is read aloud.",
+                        speed_control,
+                    ),
+                    _setting_row(
+                        body,
                         "Hold-to-talk",
                         "Hold the shortcut while you speak, release to stop.",
                         self.hold_to_talk,
@@ -262,11 +351,86 @@ class GeneralPage(QWidget):
             )
         )
 
+        layout.addWidget(
+            _section(
+                body,
+                "Phone",
+                [
+                    _setting_row(
+                        body,
+                        "Use my phone as a microphone",
+                        "Dictate from your phone over Wi-Fi; the text lands where "
+                        "your Mac cursor is. Pair it from the menu bar → Pair phone…",
+                        self.phone_mic,
+                    ),
+                ],
+            )
+        )
+
         layout.addStretch(1)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(_scroll_page(body))
+
+
+    # --- read-aloud voice ---
+
+    def _wants_kokoro(self) -> bool:
+        return self.hebrew_voice.currentData() == "kokoro"
+
+    def _update_voice_download(self) -> None:
+        downloading = self._kokoro_downloader is not None
+        self._voice_download_btn.setVisible(
+            self._wants_kokoro() and (downloading or not kokoro_installed())
+        )
+        self._voice_download_btn.setEnabled(not downloading)
+
+    def _download_kokoro(self) -> None:
+        self._voice_download_btn.setText("Downloading…")
+        self._voice_download_btn.setEnabled(False)
+        self._voice_progress.setRange(0, 0)
+        self._voice_progress.setVisible(True)
+        dl = KokoroDownloader()
+        self._kokoro_downloader = dl
+        # Bound methods, so the slots run on the main thread (see ModelsPage).
+        dl.progress.connect(self._on_voice_progress)
+        dl.finished.connect(self._on_voice_downloaded)
+        dl.error.connect(self._on_voice_download_error)
+        dl.start()
+
+    def _on_voice_progress(self, done: int, total: int) -> None:
+        if total > 0:
+            self._voice_progress.setRange(0, 100)
+            self._voice_progress.setValue(int(done * 100 / total))
+
+    def _on_voice_downloaded(self, _path: str) -> None:
+        self._kokoro_downloader = None
+        self._voice_progress.setVisible(False)
+        self._update_voice_download()
+
+    def _on_voice_download_error(self, message: str) -> None:
+        self._kokoro_downloader = None
+        self._voice_progress.setVisible(False)
+        self._voice_download_btn.setText("Retry download")
+        self._update_voice_download()
+        self._voice_download_btn.setToolTip(message)
+
+    def _preview_reading(self) -> None:
+        sample = "שלום, ככה תישמע ההקראה במהירות הזאת."
+        speed = self.read_aloud_speed.value() / 10
+        self.stop_preview()
+        if self._wants_kokoro() and kokoro_installed():
+            if self._kokoro is None:
+                self._kokoro = KokoroSpeaker()
+            self._kokoro.speak(sample, speed)
+        else:
+            self._speaker.speak(sample, speed)
+
+    def stop_preview(self) -> None:
+        self._speaker.stop()
+        if self._kokoro is not None:
+            self._kokoro.stop()
 
 
 class AdvancedPage(QWidget):
@@ -519,6 +683,10 @@ class SettingsDialog(QDialog):
             avail.y() + int((avail.height() - height) * 0.38),
         )
 
+    def done(self, result: int) -> None:
+        self._general_page.stop_preview()
+        super().done(result)
+
     def _accept(self) -> None:
         g = self._general_page
         a = self._advanced_page
@@ -532,6 +700,9 @@ class SettingsDialog(QDialog):
             hotkey=g.hotkey.combo() or "<cmd>+<shift>+<space>",
             ai_hotkey=g.ai_hotkey.combo() or "<cmd>+<shift>+<alt>+<space>",
             rewrite_selection_hotkey=g.rewrite_selection_hotkey.combo(),
+            read_aloud_hotkey=g.read_aloud_hotkey.combo(),
+            read_aloud_speed=g.read_aloud_speed.value() / 10,
+            hebrew_voice=g.hebrew_voice.currentData() or "carmit",
             device=a.device.currentText(),
             compute_type=a.compute.currentText(),
             auto_paste=g.auto_paste.isChecked(),
@@ -543,6 +714,7 @@ class SettingsDialog(QDialog):
             idle_unload_minutes=a.idle_unload.currentData(),
             cue_sounds=g.cue_sounds.isChecked(),
             cue_sound=g.cue_sound.currentData() or "harp",
+            phone_mic_enabled=g.phone_mic.isChecked(),
             modes=modes,
             active_mode=active_mode,
             ollama_url=ollama_url,
