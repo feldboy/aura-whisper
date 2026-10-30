@@ -27,6 +27,24 @@ def pick_voice(text: str) -> str | None:
     return HEBREW_VOICE if hebrew and hebrew >= latin else None
 
 
+# Voice identifiers look like com.apple.voice.<quality>.he-IL.Carmit; the
+# downloadable enhanced/premium editions sound far more natural.
+_QUALITY_RANK = {"premium": 3, "enhanced": 2, "compact": 1}
+
+
+def best_voice_id(voice_ids, name: str):
+    """The highest-quality installed voice called ``name``, or None."""
+    best, best_rank = None, -1
+    for vid in voice_ids:
+        parts = str(vid).split(".")
+        if parts[-1].lower() != name.lower():
+            continue
+        rank = max((_QUALITY_RANK.get(p.lower(), 0) for p in parts), default=0)
+        if rank > best_rank:
+            best, best_rank = vid, rank
+    return best
+
+
 def clamp_speed(speed: float) -> float:
     return min(MAX_SPEED, max(MIN_SPEED, float(speed)))
 
@@ -120,10 +138,7 @@ class Speaker:
         if voice:
             from AppKit import NSSpeechSynthesizer
 
-            for vid in NSSpeechSynthesizer.availableVoices():
-                if str(vid).split(".")[-1].lower().startswith(voice.lower()):
-                    voice_id = vid
-                    break
+            voice_id = best_voice_id(NSSpeechSynthesizer.availableVoices(), voice)
         self._synth.setVoice_(voice_id)  # None = system default voice
         self._synth.setRate_(rate_wpm(self._speed))
         return bool(self._synth.startSpeakingString_(self._text[offset:]))
